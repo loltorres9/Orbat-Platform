@@ -50,13 +50,7 @@ class ORBATBot(commands.Bot):
         for req in pending:
             self.add_view(ApprovalView(request_id=req['id'], bot=self))
 
-        try:
-            synced = await self.tree.sync()
-            print(f"✅ Global sync: {len(synced)} command(s). {len(pending)} pending view(s) restored.")
-        except Exception:
-            print("❌ Global tree.sync() failed:")
-            traceback.print_exc()
-
+        print(f"{len(pending)} pending view(s) restored.")
         print("--- setup_hook end ---")
 
     async def on_ready(self):
