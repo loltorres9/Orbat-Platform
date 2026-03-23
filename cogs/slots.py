@@ -33,7 +33,7 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
     embed = discord.Embed(
         title=f"🗺️ ORBAT — {operation_name}",
         description=(
-            f"🟢 **{open_}** open  ·  🟡 **{pending}** pending  ·  ✅ **{filled}/{total}** filled"
+            f"🟢 **{open_}** open  ·  🟡 **{pending}** pending  ·  🔴 **{filled}/{total}** filled"
         ),
         color=discord.Color.dark_blue(),
     )
@@ -48,7 +48,7 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
         lines = []
         for slot in slots:
             if slot['assigned_to']:
-                lines.append(f"✅ ~~{slot['role']}~~ — {slot['assigned_to']}")
+                lines.append(f"🔴 {slot['role']} — {slot['assigned_to']}")
             elif slot['row'] in pending_rows:
                 lines.append(f"🟡 {slot['role']} *(pending)*")
             else:
@@ -59,78 +59,6 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
         embed.add_field(name=squad_name, value=value, inline=True)
 
     return embed
-
-
-def _build_open_slots_embed(operation_name: str, available_slots: list, pending_rows: set) -> discord.Embed:
-    """Build an embed showing only unfilled slots (open + pending), grouped by squad."""
-    open_slots = [s for s in available_slots if s['row'] not in pending_rows]
-    pending_slots = [s for s in available_slots if s['row'] in pending_rows]
-
-    if not available_slots:
-        embed = discord.Embed(
-            title=f"✅ Open Slots — {operation_name}",
-            description="All slots are filled!",
-            color=discord.Color.green(),
-        )
-        embed.timestamp = discord.utils.utcnow()
-        embed.set_footer(text="Last updated")
-        return embed
-
-    embed = discord.Embed(
-        title=f"🟢 Open Slots — {operation_name}",
-        description=(
-            f"🟢 **{len(open_slots)}** open  ·  🟡 **{len(pending_slots)}** pending"
-        ),
-        color=discord.Color.green(),
-    )
-    embed.timestamp = discord.utils.utcnow()
-    embed.set_footer(text="Last updated")
-
-    squads: dict[str, list] = {}
-    for slot in available_slots:
-        squads.setdefault(slot['squad'], []).append(slot)
-
-    for squad_name, slots in list(squads.items())[:25]:
-        lines = []
-        for slot in slots:
-            if slot['row'] in pending_rows:
-                lines.append(f"🟡 {slot['role']} *(pending)*")
-            else:
-                lines.append(f"🟢 {slot['role']}")
-        if lines:
-            value = '\n'.join(lines)
-            if len(value) > 1024:
-                value = value[:1021] + '...'
-            embed.add_field(name=squad_name, value=value, inline=True)
-
-    return embed
-
-
-async def _update_open_slots(bot: commands.Bot, guild: discord.Guild, op):
-    """Silently refresh the open slots message for this guild, if one exists."""
-    stored = await database.get_open_slots_message(str(guild.id))
-    if not stored:
-        return
-    channel = guild.get_channel(int(stored['channel_id']))
-    if not channel:
-        return
-    try:
-        msg = await channel.fetch_message(int(stored['message_id']))
-    except (discord.NotFound, discord.Forbidden):
-        return
-    try:
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
-    except Exception:
-        return
-    pending_rows = set(await database.get_pending_slots(op['id']))
-    approved_rows = set(await database.get_approved_slots(op['id']))
-    available = [s for s in data['slots'] if s['row'] not in approved_rows]
-    embed = _build_open_slots_embed(data['operation_name'], available, pending_rows)
-    try:
-        await msg.edit(embed=embed)
-    except (discord.NotFound, discord.Forbidden):
-        pass
 
 
 async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
@@ -526,10 +454,9 @@ class ApprovalView(discord.ui.View):
         except (discord.Forbidden, discord.NotFound):
             pass
 
-        # Refresh live boards (fire-and-forget)
+        # Refresh the live ORBAT board (fire-and-forget)
         if op:
             asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
-            asyncio.create_task(_update_open_slots(self.bot, interaction.guild, op))
 
     async def _deny_callback(self, interaction: discord.Interaction):
         req = await database.get_request_by_id(self.request_id)
@@ -734,51 +661,6 @@ class SlotsCog(commands.Cog):
             f"✅ ORBAT posted to {target.mention}. It will update automatically when slots are approved.",
             ephemeral=True,
         )
-
-    @app_commands.command(
-        name='open-slots',
-        description='Post a live open-slots board sorted by squad — updates on every approval (Admin only)',
-    )
-    @app_commands.describe(channel='Channel to post the board in (defaults to current channel)')
-    @app_commands.default_permissions(manage_guild=True)
-    async def open_slots_board(
-        self, interaction: discord.Interaction, channel: discord.TextChannel = None
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        op = await database.get_active_operation(str(interaction.guild_id))
-        if not op:
-            await interaction.followup.send(
-                "❌ No active operation. Run `/setup-slots` first.", ephemeral=True
-            )
-            return
-
-        target = channel or interaction.channel
-
-        try:
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
-            )
-            return
-
-        pending_rows = set(await database.get_pending_slots(op['id']))
-        approved_rows = set(await database.get_approved_slots(op['id']))
-        available = [s for s in data['slots'] if s['row'] not in approved_rows]
-
-        embed = _build_open_slots_embed(data['operation_name'], available, pending_rows)
-        msg = await target.send(embed=embed)
-        await database.save_open_slots_message(
-            str(interaction.guild_id), str(target.id), str(msg.id)
-        )
-
-        await interaction.followup.send(
-            f"✅ Open slots board posted to {target.mention}. It will update automatically when slots are approved.",
-            ephemeral=True,
-        )
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SlotsCog(bot))
