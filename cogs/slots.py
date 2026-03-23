@@ -8,6 +8,37 @@ from utils import database, sheets
 
 APPROVAL_CHANNEL_NAME = 'slot-approvals'
 
+# Roles that gate who can approve/deny a request. A request submitted by a
+# member with one of these roles can only be actioned by someone who shares
+# that same role (or has manage_guild / administrator permissions).
+UNIT_ROLES = {'2nd USC', 'CNTO', 'PXG', 'TFP'}
+
+
+def _get_unit_role(member: discord.Member) -> str | None:
+    """Return the first UNIT_ROLES role the member has, or None."""
+    for role in member.roles:
+        if role.name in UNIT_ROLES:
+            return role.name
+    return None
+
+
+def _can_action_request(approver: discord.Member, unit_role: str | None) -> bool:
+    """
+    Returns True if *approver* is allowed to approve/deny a request that
+    belongs to *unit_role*.
+
+    Rules:
+    - Admins (manage_guild or administrator) can always action any request.
+    - Otherwise the approver must share the same unit role as the requester.
+    - If the requester has no unit role, any Unit Leader / admin can action it.
+    """
+    perms = approver.guild_permissions
+    if perms.manage_guild or perms.administrator:
+        return True
+    if unit_role is None:
+        return True
+    return any(r.name == unit_role for r in approver.roles)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -127,6 +158,7 @@ class SlotRequestView(discord.ui.View):
             )
             return
 
+        unit_role = _get_unit_role(interaction.user)
         request_id = await database.create_request(
             guild_id=str(interaction.guild_id),
             operation_id=self.operation_id,
@@ -134,6 +166,8 @@ class SlotRequestView(discord.ui.View):
             member_name=interaction.user.display_name,
             slot_label=slot['label'],
             sheet_row=slot['row'],
+            sheet_col=slot.get('col'),
+            unit_role=unit_role,
         )
 
         await interaction.response.send_message(
@@ -160,6 +194,8 @@ class SlotRequestView(discord.ui.View):
         embed.add_field(name='Member', value=interaction.user.mention, inline=True)
         embed.add_field(name='Requested Slot', value=f"**{slot['label']}**", inline=True)
         embed.add_field(name='Operation', value=op['name'] if op else 'Unknown', inline=False)
+        if unit_role:
+            embed.add_field(name='Unit', value=unit_role, inline=True)
         embed.set_footer(text=f"Request ID: {request_id}")
         embed.timestamp = discord.utils.utcnow()
 
@@ -285,6 +321,15 @@ class ApprovalView(discord.ui.View):
             await interaction.response.send_message("❌ Request not found.", ephemeral=True)
             return
 
+        if not _can_action_request(interaction.user, req['unit_role']):
+            unit = req['unit_role'] or 'that unit'
+            await interaction.response.send_message(
+                f"🚫 You can only approve requests from your own unit. "
+                f"This request is for **{unit}**.",
+                ephemeral=True,
+            )
+            return
+
         if req['status'] != 'pending':
             await interaction.response.send_message(
                 f"⚠️ This request has already been **{req['status']}**.", ephemeral=True
@@ -342,6 +387,15 @@ class ApprovalView(discord.ui.View):
         req = await database.get_request_by_id(self.request_id)
         if not req:
             await interaction.response.send_message("❌ Request not found.", ephemeral=True)
+            return
+
+        if not _can_action_request(interaction.user, req['unit_role']):
+            unit = req['unit_role'] or 'that unit'
+            await interaction.response.send_message(
+                f"🚫 You can only deny requests from your own unit. "
+                f"This request is for **{unit}**.",
+                ephemeral=True,
+            )
             return
 
         if req['status'] != 'pending':
