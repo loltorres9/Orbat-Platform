@@ -71,8 +71,14 @@ def _is_squad_header(cell: str) -> bool:
     if not re.search(r'[a-zA-Z]', cell):
         return False
     # Skip short labels like column headers ("Slots:", "Net", etc.)
-    # but keep unit names — anything 4+ chars is likely a unit name
     if len(cell) < 4:
+        return False
+    # Skip announcement sentences — squad headers don't end with punctuation
+    if cell.endswith('.') or cell.endswith('!') or cell.endswith('?'):
+        return False
+    # Skip ALL-CAPS announcements (e.g. "SUPPORT TEAMS ARE OPEN")
+    letters = re.findall(r'[a-zA-Z]', cell)
+    if letters and sum(1 for l in letters if l.isupper()) / len(letters) > 0.8:
         return False
     return True
 

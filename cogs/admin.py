@@ -77,5 +77,25 @@ class AdminCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+    @app_commands.command(
+        name='clear-requests',
+        description='Cancel all pending slot requests for the current operation (Admin only)',
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def clear_requests(self, interaction: discord.Interaction):
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.response.send_message(
+                "❌ No active operation.", ephemeral=True
+            )
+            return
+
+        count = await database.clear_pending_requests(op['id'])
+        await interaction.response.send_message(
+            f"✅ Cleared **{count}** pending request(s) for **{op['name']}**.",
+            ephemeral=True,
+        )
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCog(bot))

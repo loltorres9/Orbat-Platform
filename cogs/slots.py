@@ -46,19 +46,21 @@ def _build_select_menus(
             if slot['row'] in approved_rows:
                 continue
             emoji = '🟡' if slot['row'] in pending_rows else '🟢'
-            desc = f"{slot['squad']} – {'Pending approval' if slot['row'] in pending_rows else 'Available'}"
+            status = 'Pending approval' if slot['row'] in pending_rows else 'Available'
+            # Show full "Squad – Role" as label so squad context is always visible
+            full_label = f"{slot['squad']} – {slot['role']}"
             options.append(
                 discord.SelectOption(
-                    label=slot['role'][:100],
+                    label=full_label[:100],
                     value=slot['value'],
-                    description=desc[:100],
+                    description=status,
                     emoji=emoji,
                 )
             )
 
         if options:
             select = discord.ui.Select(
-                placeholder=f"Select a slot — {group_name}"[:150],
+                placeholder=f"{group_name}"[:150],
                 options=options,
                 min_values=1,
                 max_values=1,
@@ -434,6 +436,42 @@ class SlotsCog(commands.Cog):
             bot=self.bot,
         )
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+    @app_commands.command(
+        name='cancel-request',
+        description='Cancel your pending slot request for the current operation',
+    )
+    async def cancel_request(self, interaction: discord.Interaction):
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.response.send_message(
+                "❌ No active operation.", ephemeral=True
+            )
+            return
+
+        existing = await database.get_member_active_request(
+            str(interaction.guild_id), op['id'], str(interaction.user.id)
+        )
+        if not existing or existing['status'] != 'pending':
+            await interaction.response.send_message(
+                "⚠️ You don't have a pending request to cancel.", ephemeral=True
+            )
+            return
+
+        cancelled = await database.cancel_member_request(
+            str(interaction.guild_id), op['id'], str(interaction.user.id)
+        )
+        if cancelled:
+            await interaction.response.send_message(
+                f"✅ Your request for **{existing['slot_label']}** has been cancelled.\n"
+                "You can request a different slot with `/request-slot`.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Could not cancel your request.", ephemeral=True
+            )
 
 
 async def setup(bot: commands.Bot):

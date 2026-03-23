@@ -148,6 +148,30 @@ async def get_all_pending_requests() -> list:
             return await cursor.fetchall()
 
 
+async def cancel_member_request(guild_id: str, operation_id: int, member_id: str) -> bool:
+    """Cancel a member's pending request. Returns True if a request was cancelled."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE guild_id = ? AND operation_id = ? AND member_id = ? AND status = 'pending'""",
+            (guild_id, operation_id, member_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def clear_pending_requests(operation_id: int) -> int:
+    """Cancel all pending requests for an operation. Returns count of cancelled requests."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE operation_id = ? AND status = 'pending'""",
+            (operation_id,)
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
 async def approve_request(request_id: int, approved_by: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
