@@ -10,8 +10,6 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
-# Matches slot entries like: "1. Squad Leader - [PXG] Glyn"
-# or "3. Team Leader Alpha - [] <Insert Name>"
 # Matches "1. Squad Leader" or "1- Squad Leader" but NOT "1-1 Rangers" (digit after hyphen)
 _SLOT_PREFIX = re.compile(r'^\d+[.\-](?!\d)\s*')
 
@@ -77,6 +75,9 @@ def _is_squad_header(cell: str) -> bool:
     # Skip announcement sentences — squad headers don't end with punctuation
     if cell.endswith('.') or cell.endswith('!') or cell.endswith('?'):
         return False
+    # Assignment marker cells (e.g. "[] <Insert Name>") are not squad headers
+    if _is_available(cell):
+        return False
     return True
 
 
@@ -84,12 +85,15 @@ def load_slots(sheet_url: str) -> dict:
     """
     Parse an Arma 3 ORBAT Google Sheet.
 
-    Detects slots by scanning every cell for entries starting with a number
-    (e.g. "1. Squad Leader - [] <Insert Name>"). Available slots are those
-    containing "<Insert Name>". Squad headers are inferred from the nearest
-    non-slot cell above in the same column.
+    Supports two layouts:
+    - Single-cell: "3. Team Leader Alpha - [] <Insert Name>" (all in one cell)
+    - Multi-cell:  "3. Team Leader Alpha" | ... | "[] <Insert Name>" (split across columns)
 
-    Returns a dict with operation metadata and list of available slots.
+    For multi-cell layouts, when a slot entry is found the code searches up to 5
+    columns to the right in the same row for the <Insert Name> marker.  The
+    assignment is written to whichever cell contains <Insert Name>.
+
+    Squad headers are inferred from the nearest non-slot cell above in the same column.
     """
     client = get_client()
     sheet_id = extract_sheet_id(sheet_url)
@@ -114,23 +118,32 @@ def load_slots(sheet_url: str) -> dict:
                 continue
 
             if _is_slot_entry(cell):
-                if _is_available(cell):
+                # Find the cell containing <Insert Name> — may be this cell or
+                # up to 4 columns to the right (multi-cell ORBAT layouts).
+                assign_col = None
+                for search_col in range(col_idx, min(col_idx + 5, num_cols)):
+                    search_cell = row[search_col].strip() if search_col < len(row) else ''
+                    if _is_available(search_cell):
+                        assign_col = search_col
+                        break
+
+                if assign_col is not None:
                     role = _extract_role(cell)
                     squad = squad_per_col.get(col_idx, 'Unknown')
                     label = f"{squad} \u2013 {role}"
                     if len(label) > 100:
                         label = label[:97] + '...'
 
-                    sheet_row = row_idx + 1   # 1-indexed
-                    sheet_col = col_idx + 1   # 1-indexed
+                    sheet_row = row_idx + 1         # 1-indexed
+                    assign_sheet_col = assign_col + 1  # 1-indexed
 
                     slots.append({
                         'label': label,
                         'row': sheet_row,
-                        'col': sheet_col,
+                        'col': assign_sheet_col,
                         'squad': squad,
                         'role': role,
-                        'value': f"r{sheet_row}c{sheet_col}",
+                        'value': f"r{sheet_row}c{assign_sheet_col}",
                     })
             elif _is_squad_header(cell):
                 squad_per_col[col_idx] = cell
@@ -159,8 +172,8 @@ def assign_slot(sheet_id: str, row: int, col: int, member_name: str):
     Replace '<Insert Name>' in the specific cell with the member's name,
     preserving the rest of the cell text.
 
-    e.g. "3. Team Leader Alpha - [] <Insert Name>"
-      -> "3. Team Leader Alpha - [] MemberName"
+    e.g. "[] <Insert Name>"  -> "[] MemberName"
+    or   "3. Role - [] <Insert Name>" -> "3. Role - [] MemberName"
     """
     client = get_client()
     spreadsheet = client.open_by_key(sheet_id)
