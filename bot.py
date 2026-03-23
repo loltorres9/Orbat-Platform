@@ -21,9 +21,28 @@ class ORBATBot(commands.Bot):
         )
 
     async def setup_hook(self):
+        import traceback
+        print("--- setup_hook start ---")
+
         await database.init_db()
-        await self.load_extension('cogs.slots')
-        await self.load_extension('cogs.admin')
+        print("✅ Database initialised.")
+
+        try:
+            await self.load_extension('cogs.slots')
+            print("✅ Loaded cogs.slots")
+        except Exception:
+            print("❌ Failed to load cogs.slots:")
+            traceback.print_exc()
+
+        try:
+            await self.load_extension('cogs.admin')
+            print("✅ Loaded cogs.admin")
+        except Exception:
+            print("❌ Failed to load cogs.admin:")
+            traceback.print_exc()
+
+        registered = [c.name for c in self.tree.get_commands()]
+        print(f"Commands registered in tree: {registered}")
 
         # Re-register approval views for all pending requests so buttons
         # continue to work after a bot restart.
@@ -31,19 +50,24 @@ class ORBATBot(commands.Bot):
         for req in pending:
             self.add_view(ApprovalView(request_id=req['id'], bot=self))
 
-        await self.tree.sync()
-        print(f"Synced slash commands. {len(pending)} pending request view(s) restored.")
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ Global sync: {len(synced)} command(s). {len(pending)} pending view(s) restored.")
+        except Exception:
+            print("❌ Global tree.sync() failed:")
+            traceback.print_exc()
+
+        print("--- setup_hook end ---")
 
     async def on_ready(self):
+        print(f"on_ready fired. Guilds: {[g.name for g in self.guilds]}")
         # Guild-specific syncs are instant — no waiting for global propagation.
-        synced_guilds = 0
         for guild in self.guilds:
             try:
-                await self.tree.sync(guild=guild)
-                synced_guilds += 1
+                synced = await self.tree.sync(guild=guild)
+                print(f"✅ Guild sync '{guild.name}': {len(synced)} command(s).")
             except Exception as e:
-                print(f"⚠️ Could not sync to guild {guild.id}: {e}")
-        print(f"✅ {self.user} is online! Guild-synced commands to {synced_guilds} server(s).")
+                print(f"❌ Guild sync failed for '{guild.name}': {e}")
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
