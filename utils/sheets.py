@@ -220,7 +220,7 @@ def load_all_slots(sheet_url: str) -> dict:
                     if _is_available(search_cell):
                         assign_col = search_col
                         break
-                    # Detect filled assignment: "[] SomeName" where SomeName != <Insert Name>
+                    # Filled with [] prefix (bot-assigned or manually in same format)
                     filled = re.search(r'\[\]\s*(.+)', search_cell)
                     if filled:
                         name = filled.group(1).strip()
@@ -228,6 +228,11 @@ def load_all_slots(sheet_url: str) -> dict:
                             assigned_to = name
                             assign_col = search_col
                             break
+                    # Manually filled: plain name in a cell to the right (no [] prefix)
+                    if search_col > col_idx and search_cell and not _RADIO_FREQ.search(search_cell):
+                        assigned_to = search_cell
+                        assign_col = search_col
+                        break
 
                 assign_sheet_col = (assign_col + 1) if assign_col is not None else None
                 value = (
