@@ -10,6 +10,13 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive',
 ]
 
+# Matches slot entries like: "1. Squad Leader - [PXG] Glyn"
+# or "3. Team Leader Alpha - [] <Insert Name>"
+_SLOT_PREFIX = re.compile(r'^\d+[.\-]\s*')
+
+# Radio frequency cells like "152 CHN : 1" or "343 CHN:9"
+_RADIO_FREQ = re.compile(r'\d{3}\s*CHN', re.IGNORECASE)
+
 
 def get_client() -> gspread.Client:
     creds_json = os.getenv('GOOGLE_CREDENTIALS')
@@ -24,18 +31,60 @@ def extract_sheet_id(url: str) -> str:
     match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url)
     if match:
         return match.group(1)
-    raise ValueError(f"Could not extract sheet ID from URL. Make sure it's a valid Google Sheets link.")
+    raise ValueError("Could not extract sheet ID. Make sure it's a valid Google Sheets link.")
+
+
+def _is_slot_entry(cell: str) -> bool:
+    """Cell starts with a number like '1.' or '1-'."""
+    return bool(_SLOT_PREFIX.match(cell.strip()))
+
+
+def _is_available(cell: str) -> bool:
+    """Slot is available if it contains <Insert Name>."""
+    return '<insert name>' in cell.lower()
+
+
+def _extract_role(cell: str) -> str:
+    """
+    From "3. Team Leader Alpha - [] <Insert Name>"
+    returns "Team Leader Alpha".
+    """
+    # Remove leading number
+    role = _SLOT_PREFIX.sub('', cell.strip())
+    # Remove " - [tag] anything" suffix
+    role = re.sub(r'\s*[-–]\s*\[.*', '', role)
+    return role.strip()
+
+
+def _is_squad_header(cell: str) -> bool:
+    """
+    A squad header is a non-empty cell that is NOT a slot entry,
+    NOT a radio frequency, and contains at least one letter.
+    """
+    cell = cell.strip()
+    if not cell:
+        return False
+    if _is_slot_entry(cell):
+        return False
+    if _RADIO_FREQ.search(cell):
+        return False
+    if not re.search(r'[a-zA-Z]', cell):
+        return False
+    # Skip short labels like column headers ("Slots:", "Net", etc.)
+    # but keep unit names — anything 4+ chars is likely a unit name
+    if len(cell) < 4:
+        return False
+    return True
 
 
 def load_slots(sheet_url: str) -> dict:
     """
-    Load available slots from a Google Sheet.
+    Parse an Arma 3 ORBAT Google Sheet.
 
-    Expected sheet format (column names are flexible):
-    | Squad / Unit | Role / Position | Status    | Assigned To |
-    | Squad 1      | Squad Lead      | Available |             |
-    | Squad 1      | Rifleman (AR)   | Available |             |
-    ...
+    Detects slots by scanning every cell for entries starting with a number
+    (e.g. "1. Squad Leader - [] <Insert Name>"). Available slots are those
+    containing "<Insert Name>". Squad headers are inferred from the nearest
+    non-slot cell above in the same column.
 
     Returns a dict with operation metadata and list of available slots.
     """
@@ -46,99 +95,74 @@ def load_slots(sheet_url: str) -> dict:
     operation_name = spreadsheet.title
 
     all_values = worksheet.get_all_values()
+    if not all_values:
+        raise ValueError("The sheet appears to be empty.")
 
-    # Keywords used to auto-detect column roles
-    squad_keywords = {'squad', 'unit', 'element', 'group', 'platoon', 'team', 'section', 'callsign'}
-    role_keywords = {'role', 'position', 'slot', 'job', 'rank', 'billet'}
-    status_keywords = {'status', 'available', 'state'}
-    assigned_keywords = {'assigned', 'member', 'player', 'name', 'pilot', 'operator'}
+    num_cols = max(len(row) for row in all_values)
 
-    squad_col = role_col = status_col = assigned_col = None
-    header_row_idx = None
-
-    for i, row in enumerate(all_values):
-        # Normalize cell text for keyword matching
-        normalized = [
-            cell.lower().replace(' ', '').replace('_', '').replace('/', '').replace('-', '')
-            for cell in row
-        ]
-        sq_cols = [j for j, cell in enumerate(normalized) if any(kw in cell for kw in squad_keywords)]
-        rl_cols = [j for j, cell in enumerate(normalized) if any(kw in cell for kw in role_keywords)]
-
-        if sq_cols and rl_cols:
-            header_row_idx = i
-            squad_col = sq_cols[0]
-            role_col = rl_cols[0]
-            st_cols = [j for j, cell in enumerate(normalized) if any(kw in cell for kw in status_keywords)]
-            as_cols = [j for j, cell in enumerate(normalized) if any(kw in cell for kw in assigned_keywords)]
-            if st_cols:
-                status_col = st_cols[0]
-            if as_cols:
-                assigned_col = as_cols[0]
-            break
-
-    if header_row_idx is None:
-        raise ValueError(
-            "Could not find slot columns in this sheet.\n\n"
-            "Your sheet needs at minimum two columns with headers like:\n"
-            "• **Squad** or **Unit** (for the group name)\n"
-            "• **Role** or **Position** (for the slot name)\n\n"
-            "Optional columns: **Status** (Available/Assigned) and **Assigned To**.\n"
-            "See the README for a compatible template."
-        )
-
+    # Track the most recent squad header seen in each column
+    squad_per_col: dict[int, str] = {}
     slots = []
-    for i, row in enumerate(all_values[header_row_idx + 1:], start=header_row_idx + 2):
-        if len(row) <= max(squad_col, role_col):
-            continue
 
-        squad = row[squad_col].strip()
-        role = row[role_col].strip()
-        if not squad or not role:
-            continue
-
-        # Skip already-assigned slots
-        if assigned_col is not None and len(row) > assigned_col and row[assigned_col].strip():
-            continue
-
-        # Skip slots whose status is not "available"
-        if status_col is not None and len(row) > status_col:
-            status = row[status_col].strip().lower()
-            if status and status not in ('available', 'open', 'free', 'yes', ''):
+    for row_idx, row in enumerate(all_values):
+        for col_idx in range(num_cols):
+            cell = row[col_idx].strip() if col_idx < len(row) else ''
+            if not cell:
                 continue
 
-        label = f"{squad} \u2013 {role}"
-        if len(label) > 100:
-            label = label[:97] + '...'
+            if _is_slot_entry(cell):
+                if _is_available(cell):
+                    role = _extract_role(cell)
+                    squad = squad_per_col.get(col_idx, 'Unknown')
+                    label = f"{squad} \u2013 {role}"
+                    if len(label) > 100:
+                        label = label[:97] + '...'
 
-        slots.append({
-            'label': label,
-            'row': i,           # 1-indexed sheet row number
-            'squad': squad,
-            'role': role,
-            'value': f"row_{i}",  # unique identifier for Discord select menu option
-        })
+                    sheet_row = row_idx + 1   # 1-indexed
+                    sheet_col = col_idx + 1   # 1-indexed
+
+                    slots.append({
+                        'label': label,
+                        'row': sheet_row,
+                        'col': sheet_col,
+                        'squad': squad,
+                        'role': role,
+                        'value': f"r{sheet_row}c{sheet_col}",
+                    })
+            elif _is_squad_header(cell):
+                squad_per_col[col_idx] = cell
+
+    if not slots:
+        raise ValueError(
+            "No available slots found.\n\n"
+            "The bot looks for cells containing **`<Insert Name>`** to identify open slots.\n"
+            "Make sure your sheet uses that exact text for unfilled positions."
+        )
 
     return {
         'operation_name': operation_name,
         'slots': slots,
         'sheet_id': sheet_id,
-        'squad_col': squad_col,
-        'role_col': role_col,
-        'status_col': status_col,
-        'assigned_col': assigned_col,
+        # These are not used for ORBAT-format sheets (per-cell updates instead)
+        'squad_col': None,
+        'role_col': None,
+        'status_col': None,
+        'assigned_col': None,
     }
 
 
-def assign_slot(sheet_id: str, row: int, member_name: str,
-                assigned_col: Optional[int], status_col: Optional[int]):
-    """Write the member's name (and update status) into the sheet for an approved slot."""
+def assign_slot(sheet_id: str, row: int, col: int, member_name: str):
+    """
+    Replace '<Insert Name>' in the specific cell with the member's name,
+    preserving the rest of the cell text.
+
+    e.g. "3. Team Leader Alpha - [] <Insert Name>"
+      -> "3. Team Leader Alpha - [] MemberName"
+    """
     client = get_client()
     spreadsheet = client.open_by_key(sheet_id)
     worksheet = spreadsheet.sheet1
 
-    # gspread uses 1-based column indices
-    if assigned_col is not None:
-        worksheet.update_cell(row, assigned_col + 1, member_name)
-    if status_col is not None:
-        worksheet.update_cell(row, status_col + 1, 'Assigned')
+    current = worksheet.cell(row, col).value or ''
+    new_value = re.sub(r'<Insert Name>', member_name, current, flags=re.IGNORECASE)
+    worksheet.update_cell(row, col, new_value)

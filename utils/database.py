@@ -30,6 +30,7 @@ async def init_db():
                 member_name TEXT NOT NULL,
                 slot_label TEXT NOT NULL,
                 sheet_row INTEGER NOT NULL,
+                sheet_col INTEGER,
                 status TEXT DEFAULT 'pending',
                 approval_message_id TEXT,
                 approval_channel_id TEXT,
@@ -40,6 +41,12 @@ async def init_db():
                 FOREIGN KEY (operation_id) REFERENCES operations(id)
             )
         ''')
+        # Migration: add sheet_col to existing deployments
+        try:
+            await db.execute('ALTER TABLE requests ADD COLUMN sheet_col INTEGER')
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
 
 
@@ -103,12 +110,14 @@ async def get_member_active_request(guild_id: str, operation_id: int, member_id:
 
 
 async def create_request(guild_id: str, operation_id: int, member_id: str,
-                         member_name: str, slot_label: str, sheet_row: int) -> int:
+                         member_name: str, slot_label: str, sheet_row: int,
+                         sheet_col: int = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            '''INSERT INTO requests (guild_id, operation_id, member_id, member_name, slot_label, sheet_row)
-               VALUES (?, ?, ?, ?, ?, ?)''',
-            (guild_id, operation_id, member_id, member_name, slot_label, sheet_row)
+            '''INSERT INTO requests
+               (guild_id, operation_id, member_id, member_name, slot_label, sheet_row, sheet_col)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            (guild_id, operation_id, member_id, member_name, slot_label, sheet_row, sheet_col)
         )
         await db.commit()
         return cursor.lastrowid
