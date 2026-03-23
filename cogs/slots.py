@@ -134,6 +134,7 @@ class SlotRequestView(discord.ui.View):
             member_name=interaction.user.display_name,
             slot_label=slot['label'],
             sheet_row=slot['row'],
+            sheet_col=slot.get('col'),
         )
 
         await interaction.response.send_message(
@@ -303,9 +304,8 @@ class ApprovalView(discord.ui.View):
                     sheets.assign_slot,
                     op['sheet_id'],
                     req['sheet_row'],
+                    req['sheet_col'],
                     req['member_name'],
-                    op['assigned_col'],
-                    op['status_col'],
                 )
             except Exception as e:
                 await interaction.response.send_message(
