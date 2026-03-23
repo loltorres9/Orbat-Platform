@@ -383,65 +383,84 @@ class SlotsCog(commands.Cog):
     async def request_slot(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        op = await database.get_active_operation(str(interaction.guild_id))
-        if not op:
-            await interaction.followup.send(
-                "❌ No active operation. An admin needs to run `/setup-slots` first.",
-                ephemeral=True,
-            )
-            return
-
-        existing = await database.get_member_active_request(
-            str(interaction.guild_id), op['id'], str(interaction.user.id)
-        )
-        if existing:
-            await interaction.followup.send(
-                f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
-                "You can only hold one slot per operation.",
-                ephemeral=True,
-            )
-            return
-
         try:
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
+            op = await database.get_active_operation(str(interaction.guild_id))
+            if not op:
+                await interaction.followup.send(
+                    "❌ No active operation. An admin needs to run `/setup-slots` first.",
+                    ephemeral=True,
+                )
+                return
+
+            existing = await database.get_member_active_request(
+                str(interaction.guild_id), op['id'], str(interaction.user.id)
+            )
+            if existing:
+                await interaction.followup.send(
+                    f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+                    "You can only hold one slot per operation.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                loop = asyncio.get_event_loop()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "❌ Timed out loading the sheet (>30 s). Check that the sheet is shared with the service account and try again.",
+                    ephemeral=True,
+                )
+                return
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
+                )
+                return
+
+            pending_rows = set(await database.get_pending_slots(op['id']))
+            approved_rows = set(await database.get_approved_slots(op['id']))
+
+            available = [s for s in data['slots'] if s['row'] not in approved_rows]
+            if not available:
+                await interaction.followup.send(
+                    "❌ All slots are filled for this operation.", ephemeral=True
+                )
+                return
+
+            open_count = sum(1 for s in available if s['row'] not in pending_rows)
+            pending_count = sum(1 for s in available if s['row'] in pending_rows)
+
+            embed = discord.Embed(
+                title=f"🎖️ {data['operation_name']} — Slot Request",
+                description=(
+                    f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
+                    "Select your slot from the menu(s) below.\n"
+                    "Pending slots are reserved until approved or denied."
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            view = SlotRequestView(
+                slots=available,
+                operation_id=op['id'],
+                pending_rows=pending_rows,
+                approved_rows=approved_rows,
+                bot=self.bot,
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
         except Exception as e:
-            await interaction.followup.send(
-                f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
-            )
-            return
-
-        pending_rows = set(await database.get_pending_slots(op['id']))
-        approved_rows = set(await database.get_approved_slots(op['id']))
-
-        available = [s for s in data['slots'] if s['row'] not in approved_rows]
-        if not available:
-            await interaction.followup.send(
-                "❌ All slots are filled for this operation.", ephemeral=True
-            )
-            return
-
-        open_count = sum(1 for s in available if s['row'] not in pending_rows)
-        pending_count = sum(1 for s in available if s['row'] in pending_rows)
-
-        embed = discord.Embed(
-            title=f"🎖️ {data['operation_name']} — Slot Request",
-            description=(
-                f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
-                "Select your slot from the menu(s) below.\n"
-                "Pending slots are reserved until approved or denied."
-            ),
-            color=discord.Color.blurple(),
-        )
-
-        view = SlotRequestView(
-            slots=available,
-            operation_id=op['id'],
-            pending_rows=pending_rows,
-            approved_rows=approved_rows,
-            bot=self.bot,
-        )
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            # Catch-all so the user always gets a response instead of "thinking…" forever
+            try:
+                await interaction.followup.send(
+                    f"❌ Unexpected error: `{e}`", ephemeral=True
+                )
+            except Exception:
+                pass
 
 
     @app_commands.command(
