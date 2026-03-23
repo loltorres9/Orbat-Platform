@@ -36,7 +36,13 @@ def _build_select_menus(
         groups = []
         for i in range(0, len(flat), 25):
             chunk = flat[i : i + 25]
-            groups.append((f"Slots {i + 1}–{i + len(chunk)}", chunk))
+            first_squad = chunk[0]['squad']
+            last_squad = chunk[-1]['squad']
+            if first_squad == last_squad:
+                label = first_squad
+            else:
+                label = f"{first_squad[:30]} … {last_squad[:30]}"
+            groups.append((label, chunk))
         groups = groups[:5]
 
     menus = []
