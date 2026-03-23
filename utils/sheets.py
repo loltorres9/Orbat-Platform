@@ -109,6 +109,7 @@ def load_slots(sheet_url: str) -> dict:
 
     # Track the most recent squad header seen in each column
     squad_per_col: dict[int, str] = {}
+    seen_values: set = set()
     slots = []
 
     for row_idx, row in enumerate(all_values):
@@ -120,12 +121,16 @@ def load_slots(sheet_url: str) -> dict:
             if _is_slot_entry(cell):
                 # Find the cell containing <Insert Name> — may be this cell or
                 # up to 4 columns to the right (multi-cell ORBAT layouts).
+                # Stop early if another slot entry is encountered: that cell belongs
+                # to a different squad's column and we must not steal its assignment.
                 assign_col = None
                 for search_col in range(col_idx, min(col_idx + 5, num_cols)):
                     search_cell = row[search_col].strip() if search_col < len(row) else ''
                     if _is_available(search_cell):
                         assign_col = search_col
                         break
+                    if search_col > col_idx and _is_slot_entry(search_cell):
+                        break  # crossed into another slot — stop
 
                 if assign_col is not None:
                     role = _extract_role(cell)
@@ -136,6 +141,11 @@ def load_slots(sheet_url: str) -> dict:
 
                     sheet_row = row_idx + 1         # 1-indexed
                     assign_sheet_col = assign_col + 1  # 1-indexed
+                    value = f"r{sheet_row}c{assign_sheet_col}"
+
+                    if value in seen_values:
+                        continue  # same cell already claimed — skip duplicate
+                    seen_values.add(value)
 
                     slots.append({
                         'label': label,
@@ -143,7 +153,7 @@ def load_slots(sheet_url: str) -> dict:
                         'col': assign_sheet_col,
                         'squad': squad,
                         'role': role,
-                        'value': f"r{sheet_row}c{assign_sheet_col}",
+                        'value': value,
                     })
             elif _is_squad_header(cell):
                 squad_per_col[col_idx] = cell
