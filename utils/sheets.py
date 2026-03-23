@@ -12,7 +12,8 @@ SCOPES = [
 
 # Matches slot entries like: "1. Squad Leader - [PXG] Glyn"
 # or "3. Team Leader Alpha - [] <Insert Name>"
-_SLOT_PREFIX = re.compile(r'^\d+[.\-]\s*')
+# Matches "1. Squad Leader" or "1- Squad Leader" but NOT "1-1 Rangers" (digit after hyphen)
+_SLOT_PREFIX = re.compile(r'^\d+[.\-](?!\d)\s*')
 
 # Radio frequency cells like "152 CHN : 1" or "343 CHN:9"
 _RADIO_FREQ = re.compile(r'\d{3}\s*CHN', re.IGNORECASE)
