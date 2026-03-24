@@ -9,6 +9,7 @@ A Discord bot for managing Arma 3 operation slot requests. Members request slots
 - `/request-slot` — shows all available slots as a dropdown (up to 125 slots across 5 select menus)
 - `/cancel-request` — cancel your pending slot request
 - `/change-slot` — forfeit your current slot and pick a new one
+- `/leave-operation` — remove yourself from the operation entirely (pending or approved)
 - `/setup-slots <url>` — admin command to load a Google Sheet for the current operation; auto-posts a live ORBAT to `#orbat`
 - `/post-orbat [channel]` — manually post (or re-post) the live ORBAT board to any channel
 - `/current-operation` — shows which operation is active
@@ -23,6 +24,7 @@ A Discord bot for managing Arma 3 operation slot requests. Members request slots
 - Unit role gating — admins can only approve requests from their own unit (2nd USC, CNTO, PXG, TFP)
 - Approval buttons survive bot restarts (persistent views)
 - Bot syncs slash commands automatically on startup — no manual `/sync` needed
+- PostgreSQL database — data persists across restarts and redeployments
 
 ---
 
@@ -73,19 +75,19 @@ Copy `.env.example` to `.env` and fill in:
 ```
 DISCORD_TOKEN=...
 GOOGLE_CREDENTIALS={...paste entire JSON key file contents here...}
+DATABASE_URL=...
 ```
 
 ### 4. Deploy to Railway
 
 1. Push this repo to GitHub
 2. Go to [Railway](https://railway.app) → **New Project → Deploy from GitHub** → select this repo
-3. In the Railway project → **Variables** — add `DISCORD_TOKEN` and `GOOGLE_CREDENTIALS`
-4. **Add a Volume** so the database survives redeployments:
-   - In your Railway service → **Volumes** → **Add Volume**
-   - Set the mount path to `/data`
-   - Add the variable `DB_PATH=/data/orbat.db`
-   - Without this step the database resets on every deploy, requiring you to run `/setup-slots` again
+3. Add a **Postgres** service to your project (Railway dashboard → **+ New** → **Database → PostgreSQL**)
+4. In your bot service → **Variables** — add `DISCORD_TOKEN` and `GOOGLE_CREDENTIALS`
+   - `DATABASE_URL` is injected automatically from the Postgres service — no manual entry needed
 5. Railway will auto-deploy. The `Procfile` tells it to run `python bot.py`
+
+> The database lives in PostgreSQL and persists across all restarts and redeployments. No volume configuration needed.
 
 ---
 
@@ -148,6 +150,12 @@ Cancels your pending slot request and frees it for others.
 ```
 
 Forfeits your current slot (pending or approved) and lets you pick a new one. If your slot was approved it is also cleared from the sheet.
+
+```
+/leave-operation
+```
+
+Removes you from the operation entirely. Works for both pending and approved slots. If you were approved, your slot is also cleared from the sheet. Shows a confirmation prompt before acting.
 
 ### Approval flow
 
