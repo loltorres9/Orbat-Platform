@@ -23,7 +23,7 @@ def _get_unit_role(member: discord.Member) -> str | None:
 
 
 def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) -> discord.Embed:
-    """Build a live ORBAT embed grouped by squad."""
+    """Build a live ORBAT embed grouped by squad, mirroring the sheet's column layout."""
     filled = sum(1 for s in all_slots if s['assigned_to'])
     pending = sum(1 for s in all_slots if not s['assigned_to'] and s['row'] in pending_rows)
     open_ = sum(1 for s in all_slots if not s['assigned_to'] and s['row'] not in pending_rows)
@@ -39,11 +39,19 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
     embed.timestamp = discord.utils.utcnow()
     embed.set_footer(text="Last updated")
 
+    # Group slots by squad, tracking first-seen sheet column for layout
     squads: dict[str, list] = {}
+    squad_col: dict[str, int] = {}
     for slot in all_slots:
-        squads.setdefault(slot['squad'], []).append(slot)
+        name = slot['squad']
+        squads.setdefault(name, []).append(slot)
+        if name not in squad_col:
+            squad_col[name] = slot.get('col_idx', 0)
 
-    for squad_name, slots in list(squads.items())[:25]:  # Discord max 25 fields
+    # Sort squads by their column position on the sheet (left → right)
+    ordered = sorted(squads.keys(), key=lambda s: squad_col[s])
+
+    def _make_value(slots: list) -> str:
         lines = []
         for slot in slots:
             if slot['assigned_to']:
@@ -53,9 +61,33 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
             else:
                 lines.append(f"🟢 {slot['role']}")
         value = '\n'.join(lines)
-        if len(value) > 1024:
-            value = value[:1021] + '...'
-        embed.add_field(name=squad_name, value=value, inline=True)
+        return value[:1021] + '...' if len(value) > 1024 else value
+
+    # Split into left / right column groups based on col_idx midpoint
+    if len(ordered) > 1:
+        col_values = [squad_col[s] for s in ordered]
+        mid = (min(col_values) + max(col_values)) / 2
+        left = [s for s in ordered if squad_col[s] <= mid]
+        right = [s for s in ordered if squad_col[s] > mid]
+    else:
+        left, right = ordered, []
+
+    if left and right:
+        # Two-column layout: left squad | right squad | blank spacer
+        # Each row uses 3 fields; cap at 8 rows (24 fields) to stay under Discord's 25-field limit.
+        max_rows = min(max(len(left), len(right)), 8)
+        for i in range(max_rows):
+            lname = left[i] if i < len(left) else '\u200b'
+            rname = right[i] if i < len(right) else '\u200b'
+            lval = _make_value(squads[lname]) if lname in squads else '\u200b'
+            rval = _make_value(squads[rname]) if rname in squads else '\u200b'
+            embed.add_field(name=lname, value=lval, inline=True)
+            embed.add_field(name=rname, value=rval, inline=True)
+            embed.add_field(name='\u200b', value='\u200b', inline=True)  # spacer
+    else:
+        # Single column — fall back to 3-per-row inline
+        for name in ordered[:25]:
+            embed.add_field(name=name, value=_make_value(squads[name]), inline=True)
 
     return embed
 
@@ -414,6 +446,8 @@ class ApprovalView(discord.ui.View):
                     req['member_name'],
                     op['assigned_col'],
                     op['status_col'],
+                    req['sheet_col'],
+                    req['unit_role'],
                 )
             except Exception as e:
                 await interaction.response.send_message(
