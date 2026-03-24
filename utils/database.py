@@ -1,14 +1,24 @@
-import aiosqlite
+import asyncpg
 import os
 
-DB_PATH = os.getenv('DB_PATH', 'orbat.db')
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+_pool = None
+
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL)
+    return _pool
 
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute('''
             CREATE TABLE IF NOT EXISTS operations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 sheet_url TEXT NOT NULL,
@@ -23,7 +33,7 @@ async def init_db():
         ''')
         await db.execute('''
             CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 operation_id INTEGER NOT NULL,
                 member_id TEXT NOT NULL,
@@ -36,23 +46,11 @@ async def init_db():
                 approval_channel_id TEXT,
                 approved_by TEXT,
                 denial_reason TEXT,
+                unit_role TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (operation_id) REFERENCES operations(id)
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        # Migration: add sheet_col to existing deployments
-        try:
-            await db.execute('ALTER TABLE requests ADD COLUMN sheet_col INTEGER')
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
-        # Migration: add unit_role to existing deployments
-        try:
-            await db.execute('ALTER TABLE requests ADD COLUMN unit_role TEXT')
-            await db.commit()
-        except Exception:
-            pass  # Column already exists
         await db.execute('''
             CREATE TABLE IF NOT EXISTS orbat_messages (
                 guild_id TEXT PRIMARY KEY,
@@ -61,172 +59,215 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        await db.commit()
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS open_slots_messages (
+                guild_id TEXT PRIMARY KEY,
+                channel_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
 
 async def get_active_operation(guild_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            'SELECT * FROM operations WHERE guild_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1',
-            (guild_id,)
-        ) as cursor:
-            return await cursor.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            'SELECT * FROM operations WHERE guild_id = $1 AND is_active = 1 ORDER BY created_at DESC LIMIT 1',
+            guild_id,
+        )
 
 
 async def create_operation(guild_id: str, name: str, sheet_url: str, sheet_id: str,
                            squad_col: int, role_col: int, status_col: int, assigned_col: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute(
-            'UPDATE operations SET is_active = 0 WHERE guild_id = ?',
-            (guild_id,)
+            'UPDATE operations SET is_active = 0 WHERE guild_id = $1',
+            guild_id,
         )
-        cursor = await db.execute(
+        row = await db.fetchrow(
             '''INSERT INTO operations
                (guild_id, name, sheet_url, sheet_id, squad_col, role_col, status_col, assigned_col)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (guild_id, name, sheet_url, sheet_id, squad_col, role_col, status_col, assigned_col)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id''',
+            guild_id, name, sheet_url, sheet_id, squad_col, role_col, status_col, assigned_col,
         )
-        await db.commit()
-        return cursor.lastrowid
+        return row['id']
 
 
 async def get_pending_slots(operation_id: int) -> list:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT sheet_row FROM requests WHERE operation_id = ? AND status = 'pending'",
-            (operation_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [row[0] for row in rows]
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        rows = await db.fetch(
+            "SELECT sheet_row FROM requests WHERE operation_id = $1 AND status = 'pending'",
+            operation_id,
+        )
+        return [row['sheet_row'] for row in rows]
 
 
 async def get_approved_slots(operation_id: int) -> list:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT sheet_row FROM requests WHERE operation_id = ? AND status = 'approved'",
-            (operation_id,)
-        ) as cursor:
-            rows = await cursor.fetchall()
-            return [row[0] for row in rows]
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        rows = await db.fetch(
+            "SELECT sheet_row FROM requests WHERE operation_id = $1 AND status = 'approved'",
+            operation_id,
+        )
+        return [row['sheet_row'] for row in rows]
 
 
 async def get_member_active_request(guild_id: str, operation_id: int, member_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
             """SELECT * FROM requests
-               WHERE guild_id = ? AND operation_id = ? AND member_id = ?
+               WHERE guild_id = $1 AND operation_id = $2 AND member_id = $3
                AND status IN ('pending', 'approved')""",
-            (guild_id, operation_id, member_id)
-        ) as cursor:
-            return await cursor.fetchone()
+            guild_id, operation_id, member_id,
+        )
 
 
 async def create_request(guild_id: str, operation_id: int, member_id: str,
                          member_name: str, slot_label: str, sheet_row: int,
                          sheet_col: int = None, unit_role: str = None) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
             '''INSERT INTO requests
                (guild_id, operation_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-            (guild_id, operation_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id''',
+            guild_id, operation_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role,
         )
-        await db.commit()
-        return cursor.lastrowid
+        return row['id']
 
 
 async def update_request_message(request_id: int, message_id: str, channel_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute(
-            'UPDATE requests SET approval_message_id = ?, approval_channel_id = ? WHERE id = ?',
-            (message_id, channel_id, request_id)
+            'UPDATE requests SET approval_message_id = $1, approval_channel_id = $2 WHERE id = $3',
+            message_id, channel_id, request_id,
         )
-        await db.commit()
 
 
 async def get_request_by_id(request_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT * FROM requests WHERE id = ?', (request_id,)) as cursor:
-            return await cursor.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow('SELECT * FROM requests WHERE id = $1', request_id)
 
 
 async def get_all_pending_requests() -> list:
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM requests WHERE status = 'pending'"
-        ) as cursor:
-            return await cursor.fetchall()
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch("SELECT * FROM requests WHERE status = 'pending'")
 
 
 async def cancel_member_request(guild_id: str, operation_id: int, member_id: str) -> bool:
-    """Cancel a member's pending request. Returns True if a request was cancelled."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
             """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-               WHERE guild_id = ? AND operation_id = ? AND member_id = ? AND status = 'pending'""",
-            (guild_id, operation_id, member_id)
+               WHERE guild_id = $1 AND operation_id = $2 AND member_id = $3 AND status = 'pending'""",
+            guild_id, operation_id, member_id,
         )
-        await db.commit()
-        return cursor.rowcount > 0
+        return int(result.split()[-1]) > 0
 
 
 async def clear_pending_requests(operation_id: int) -> int:
-    """Cancel all pending requests for an operation. Returns count of cancelled requests."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
             """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-               WHERE operation_id = ? AND status = 'pending'""",
-            (operation_id,)
+               WHERE operation_id = $1 AND status = 'pending'""",
+            operation_id,
         )
-        await db.commit()
-        return cursor.rowcount
+        return int(result.split()[-1])
+
+
+async def get_approved_requests(operation_id: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            "SELECT * FROM requests WHERE operation_id = $1 AND status = 'approved'",
+            operation_id,
+        )
+
+
+async def cancel_request_by_id(request_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 AND status = 'approved'""",
+            request_id,
+        )
+        return int(result.split()[-1]) > 0
 
 
 async def approve_request(request_id: int, approved_by: str):
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute(
             """UPDATE requests
-               SET status = 'approved', approved_by = ?, updated_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
-            (approved_by, request_id)
+               SET status = 'approved', approved_by = $1, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $2""",
+            approved_by, request_id,
         )
-        await db.commit()
 
 
 async def deny_request(request_id: int, denied_by: str, reason: str = None):
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute(
             """UPDATE requests
-               SET status = 'denied', approved_by = ?, denial_reason = ?, updated_at = CURRENT_TIMESTAMP
-               WHERE id = ?""",
-            (denied_by, reason, request_id)
+               SET status = 'denied', approved_by = $1, denial_reason = $2, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $3""",
+            denied_by, reason, request_id,
         )
-        await db.commit()
 
 
 async def save_orbat_message(guild_id: str, channel_id: str, message_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
+    pool = await get_pool()
+    async with pool.acquire() as db:
         await db.execute(
             '''INSERT INTO orbat_messages (guild_id, channel_id, message_id)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   channel_id = excluded.channel_id,
-                   message_id = excluded.message_id,
+               VALUES ($1, $2, $3)
+               ON CONFLICT (guild_id) DO UPDATE SET
+                   channel_id = EXCLUDED.channel_id,
+                   message_id = EXCLUDED.message_id,
                    updated_at = CURRENT_TIMESTAMP''',
-            (guild_id, channel_id, message_id)
+            guild_id, channel_id, message_id,
         )
-        await db.commit()
 
 
 async def get_orbat_message(guild_id: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            'SELECT channel_id, message_id FROM orbat_messages WHERE guild_id = ?',
-            (guild_id,)
-        ) as cursor:
-            return await cursor.fetchone()
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            'SELECT channel_id, message_id FROM orbat_messages WHERE guild_id = $1',
+            guild_id,
+        )
+
+
+async def save_open_slots_message(guild_id: str, channel_id: str, message_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            '''INSERT INTO open_slots_messages (guild_id, channel_id, message_id)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (guild_id) DO UPDATE SET
+                   channel_id = EXCLUDED.channel_id,
+                   message_id = EXCLUDED.message_id,
+                   updated_at = CURRENT_TIMESTAMP''',
+            guild_id, channel_id, message_id,
+        )
+
+
+async def get_open_slots_message(guild_id: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            'SELECT channel_id, message_id FROM open_slots_messages WHERE guild_id = $1',
+            guild_id,
+        )

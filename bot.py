@@ -21,9 +21,28 @@ class ORBATBot(commands.Bot):
         )
 
     async def setup_hook(self):
+        import traceback
+        print("--- setup_hook start ---")
+
         await database.init_db()
-        await self.load_extension('cogs.slots')
-        await self.load_extension('cogs.admin')
+        print("✅ Database initialised.")
+
+        try:
+            await self.load_extension('cogs.slots')
+            print("✅ Loaded cogs.slots")
+        except Exception:
+            print("❌ Failed to load cogs.slots:")
+            traceback.print_exc()
+
+        try:
+            await self.load_extension('cogs.admin')
+            print("✅ Loaded cogs.admin")
+        except Exception:
+            print("❌ Failed to load cogs.admin:")
+            traceback.print_exc()
+
+        registered = [c.name for c in self.tree.get_commands()]
+        print(f"Commands registered in tree: {registered}")
 
         # Re-register approval views for all pending requests so buttons
         # continue to work after a bot restart.
@@ -31,17 +50,30 @@ class ORBATBot(commands.Bot):
         for req in pending:
             self.add_view(ApprovalView(request_id=req['id'], bot=self))
 
-        await self.tree.sync()
-        print(f"Synced slash commands. {len(pending)} pending request view(s) restored.")
+        print(f"{len(pending)} pending view(s) restored.")
+        print("--- setup_hook end ---")
 
     async def on_ready(self):
-        print(f"✅ {self.user} is online!")
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name='for /request-slot',
-            )
-        )
+        print(f"on_ready fired. Guilds: {[g.name for g in self.guilds]}")
+        # Copy global commands into each guild and sync — this is instant,
+        # unlike global sync which can take up to an hour to propagate.
+        for guild in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                print(f"✅ Guild sync '{guild.name}': {len(synced)} command(s).")
+            except Exception as e:
+                print(f"❌ Guild sync failed for '{guild.name}': {e}")
+
+
+    async def on_guild_join(self, guild: discord.Guild):
+        """Sync commands when the bot is added to a new server while already running."""
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            print(f"✅ Joined '{guild.name}' — synced {len(synced)} command(s).")
+        except Exception as e:
+            print(f"❌ Guild sync failed for '{guild.name}': {e}")
 
 
 def main():

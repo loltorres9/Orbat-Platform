@@ -5,6 +5,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import database, sheets
+from cogs.slots import _build_orbat_embed, _update_orbat
+
+ORBAT_CHANNEL_NAME = 'orbat'
 
 
 class AdminCog(commands.Cog):
@@ -45,7 +48,7 @@ class AdminCog(commands.Cog):
         )
 
         slot_count = len(data['slots'])
-        embed = discord.Embed(
+        confirm_embed = discord.Embed(
             title='✅ Operation Loaded',
             description=(
                 f"**{data['operation_name']}**\n"
@@ -54,7 +57,129 @@ class AdminCog(commands.Cog):
             ),
             color=discord.Color.green(),
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Auto-post ORBAT to #orbat (create channel if needed)
+        orbat_channel = discord.utils.get(
+            interaction.guild.text_channels, name=ORBAT_CHANNEL_NAME
+        )
+        if not orbat_channel:
+            try:
+                orbat_channel = await interaction.guild.create_text_channel(
+                    ORBAT_CHANNEL_NAME,
+                    topic='Live ORBAT for the current operation',
+                )
+            except discord.Forbidden:
+                orbat_channel = None
+
+        if orbat_channel:
+            try:
+                op = await database.get_active_operation(str(interaction.guild_id))
+                loop = asyncio.get_event_loop()
+                all_data = await loop.run_in_executor(None, sheets.load_all_slots, sheet_url)
+                pending_rows = set(await database.get_pending_slots(op['id']))
+                orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows)
+                msg = await orbat_channel.send(embed=orbat_embed)
+                await database.save_orbat_message(
+                    str(interaction.guild_id), str(orbat_channel.id), str(msg.id)
+                )
+                confirm_embed.description += f"\n\n📋 ORBAT posted to {orbat_channel.mention}."
+            except Exception:
+                pass  # ORBAT post failure is non-fatal
+
+        await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+
+    @app_commands.command(
+        name='clear-slot',
+        description='Remove a member from an approved slot (Admin only)',
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def clear_slot(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.followup.send("❌ No active operation.", ephemeral=True)
+            return
+
+        approved = await database.get_approved_requests(op['id'])
+        if not approved:
+            await interaction.followup.send(
+                "ℹ️ No approved slots to clear.", ephemeral=True
+            )
+            return
+
+        options = [
+            discord.SelectOption(
+                label=f"{req['member_name']} — {req['slot_label']}"[:100],
+                value=str(req['id']),
+                description=f"Row {req['sheet_row']}",
+            )
+            for req in approved[:25]
+        ]
+
+        select = discord.ui.Select(
+            placeholder='Select a slot to clear…',
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+        bot_ref = self.bot
+
+        async def _select_callback(sel_interaction: discord.Interaction):
+            request_id = int(sel_interaction.data['values'][0])
+            req = await database.get_request_by_id(request_id)
+            if not req or req['status'] != 'approved':
+                await sel_interaction.response.send_message(
+                    "❌ That slot is no longer approved.", ephemeral=True
+                )
+                return
+
+            # Clear the sheet cell
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    sheets.clear_slot,
+                    op['sheet_id'],
+                    req['sheet_row'],
+                    req['sheet_col'],
+                    req['member_name'],
+                )
+            except Exception as e:
+                await sel_interaction.response.send_message(
+                    f"⚠️ Could not update the sheet: `{e}`\nPlease clear it manually.",
+                    ephemeral=True,
+                )
+                return
+
+            await database.cancel_request_by_id(request_id)
+
+            await sel_interaction.response.send_message(
+                f"✅ Cleared **{req['slot_label']}** — removed **{req['member_name']}**.",
+                ephemeral=True,
+            )
+
+            # DM the member
+            try:
+                member = await sel_interaction.guild.fetch_member(int(req['member_id']))
+                await member.send(
+                    f"ℹ️ **Slot Cleared**\n"
+                    f"An admin has removed you from **{req['slot_label']}**.\n"
+                    f"You can request a different slot with `/request-slot`."
+                )
+            except (discord.Forbidden, discord.NotFound):
+                pass
+
+            # Refresh ORBAT
+            asyncio.create_task(_update_orbat(bot_ref, sel_interaction.guild, op))
+
+        select.callback = _select_callback
+        view = discord.ui.View(timeout=120)
+        view.add_item(select)
+        await interaction.followup.send(
+            "Select the slot to clear:", view=view, ephemeral=True
+        )
 
     @app_commands.command(
         name='current-operation',

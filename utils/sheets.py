@@ -220,7 +220,7 @@ def load_all_slots(sheet_url: str) -> dict:
                     if _is_available(search_cell):
                         assign_col = search_col
                         break
-                    # Detect filled assignment: "[] SomeName" where SomeName != <Insert Name>
+                    # Filled with [] prefix (bot-assigned or manually in same format)
                     filled = re.search(r'\[\]\s*(.+)', search_cell)
                     if filled:
                         name = filled.group(1).strip()
@@ -228,6 +228,19 @@ def load_all_slots(sheet_url: str) -> dict:
                             assigned_to = name
                             assign_col = search_col
                             break
+                    # Single-cell filled: "1. Role - [TAG] Name" where name is not <Insert Name>
+                    tagged = re.search(r'-\s*\[.*?\]\s*(.+)', search_cell)
+                    if tagged:
+                        name = tagged.group(1).strip()
+                        if name and '<insert name>' not in name.lower():
+                            assigned_to = name
+                            assign_col = search_col
+                            break
+                    # Manually filled: plain name in a cell to the right (no [] prefix)
+                    if search_col > col_idx and search_cell and not _RADIO_FREQ.search(search_cell):
+                        assigned_to = search_cell
+                        assign_col = search_col
+                        break
 
                 assign_sheet_col = (assign_col + 1) if assign_col is not None else None
                 value = (
@@ -243,6 +256,7 @@ def load_all_slots(sheet_url: str) -> dict:
                     'role': role,
                     'row': sheet_row,
                     'assigned_to': assigned_to,
+                    'col_idx': col_idx,
                 })
             elif _is_squad_header(cell):
                 squad_per_col[col_idx] = cell
@@ -254,13 +268,42 @@ def load_all_slots(sheet_url: str) -> dict:
     }
 
 
-def assign_slot(sheet_id: str, row: int, col: int, member_name: str):
+def clear_slot(sheet_id: str, row: int, col: int, member_name: str):
     """
-    Replace '<Insert Name>' in the specific cell with the member's name,
-    preserving the rest of the cell text.
+    Reverse an assignment: restore the cell to '[] <Insert Name>'.
 
-    e.g. "[] <Insert Name>"  -> "[] MemberName"
-    or   "3. Role - [] <Insert Name>" -> "3. Role - [] MemberName"
+    Tries to surgically replace just the member name after '[]'; falls back
+    to a plain text replacement; and as a last resort rewrites the cell as
+    '[] <Insert Name>'.
+    """
+    client = get_client()
+    spreadsheet = client.open_by_key(sheet_id)
+    worksheet = spreadsheet.sheet1
+
+    current = worksheet.cell(row, col).value or ''
+    # Replace "[] MemberName" → "[] <Insert Name>"
+    new_value = re.sub(
+        r'(\[\]\s*)' + re.escape(member_name),
+        r'\g<1><Insert Name>',
+        current,
+        flags=re.IGNORECASE,
+    )
+    if new_value == current:
+        # Fallback: replace the name anywhere in the cell
+        new_value = re.sub(re.escape(member_name), '<Insert Name>', current, flags=re.IGNORECASE)
+    if new_value == current:
+        # Last resort: reset the cell entirely
+        new_value = '[] <Insert Name>'
+    worksheet.update_cell(row, col, new_value)
+
+
+def assign_slot(sheet_id: str, row: int, col: int, member_name: str, unit_role: str = None):
+    """
+    Replace '<Insert Name>' with the member's name and, if a unit_role is
+    provided, fill the [] tag with the group name.
+
+    e.g. "[] <Insert Name>"  -> "[2nd USC] MemberName"
+    or   "3. Role - [] <Insert Name>" -> "3. Role - [2nd USC] MemberName"
     """
     client = get_client()
     spreadsheet = client.open_by_key(sheet_id)
@@ -268,4 +311,6 @@ def assign_slot(sheet_id: str, row: int, col: int, member_name: str):
 
     current = worksheet.cell(row, col).value or ''
     new_value = re.sub(r'<Insert Name>', member_name, current, flags=re.IGNORECASE)
+    if unit_role:
+        new_value = re.sub(r'\[\]', f'[{unit_role}]', new_value, count=1)
     worksheet.update_cell(row, col, new_value)
