@@ -65,12 +65,6 @@ class ORBATBot(commands.Bot):
             except Exception as e:
                 print(f"❌ Guild sync failed for '{guild.name}': {e}")
 
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name='for /request-slot',
-            )
-        )
 
     async def on_guild_join(self, guild: discord.Guild):
         """Sync commands when the bot is added to a new server while already running."""
