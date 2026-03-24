@@ -80,6 +80,15 @@ class ORBATBot(commands.Bot):
             )
         )
 
+    async def on_guild_join(self, guild: discord.Guild):
+        """Sync commands when the bot is added to a new server while already running."""
+        try:
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            print(f"✅ Joined '{guild.name}' — synced {len(synced)} command(s).")
+        except Exception as e:
+            print(f"❌ Guild sync failed for '{guild.name}': {e}")
+
 
 def main():
     token = os.getenv('DISCORD_TOKEN')
