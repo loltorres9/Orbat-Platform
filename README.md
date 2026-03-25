@@ -10,6 +10,7 @@ A Discord bot for managing Arma 3 operation slot requests. Members request slots
 - `/cancel-request` — cancel your pending slot request
 - `/change-slot` — forfeit your current slot and pick a new one
 - `/leave-operation` — remove yourself from the operation entirely (pending or approved)
+- `/assign-slot <member>` — admin command to directly assign a member to a slot, bypassing the approval flow
 - `/setup-slots <url>` — admin command to load a Google Sheet for the current operation; auto-posts a live ORBAT to `#orbat`
 - `/post-orbat [channel]` — manually post (or re-post) the live ORBAT board to any channel
 - `/current-operation` — shows which operation is active and links to the sheet
@@ -111,6 +112,12 @@ Run this once per operation. The previous operation is archived automatically. A
 ```
 
 Manually post or re-post the live ORBAT board. Defaults to the current channel.
+
+```
+/assign-slot @member
+```
+
+Directly assigns a member to a slot — no approval message, no waiting. Shows the same slot picker dropdown. The sheet is updated immediately and the member gets a DM. Blocked if the member already holds a slot; use `/clear-slot` first to reassign.
 
 ```
 /clear-slot

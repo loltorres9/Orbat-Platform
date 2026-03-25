@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import database, sheets
-from cogs.slots import _build_orbat_embed, _update_orbat
+from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat
 
 ORBAT_CHANNEL_NAME = 'orbat'
 
@@ -221,6 +221,131 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
+
+    @app_commands.command(
+        name='assign-slot',
+        description='Directly assign a member to a slot without going through approval (Admin only)',
+    )
+    @app_commands.describe(member='The Discord member to assign')
+    @app_commands.default_permissions(manage_guild=True)
+    async def assign_slot(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.followup.send("❌ No active operation.", ephemeral=True)
+            return
+
+        # Check the member doesn't already have an active slot
+        existing = await database.get_member_active_request(
+            str(interaction.guild_id), op['id'], str(member.id)
+        )
+        if existing:
+            await interaction.followup.send(
+                f"⚠️ **{member.display_name}** already has a **{existing['status']}** slot: "
+                f"**{existing['slot_label']}**.\nUse `/clear-slot` first if you want to reassign them.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to load slots: `{e}`", ephemeral=True)
+            return
+
+        if not data['slots']:
+            await interaction.followup.send("ℹ️ No available slots found.", ephemeral=True)
+            return
+
+        pending_rows = set(await database.get_pending_slots(op['id']))
+        approved_rows = set(await database.get_approved_slots(op['id']))
+        menus = _build_select_menus(data['slots'], pending_rows, approved_rows)
+
+        if not menus:
+            await interaction.followup.send("ℹ️ All slots are currently filled or pending.", ephemeral=True)
+            return
+
+        slots_by_value = {s['value']: s for s in data['slots']}
+        bot_ref = self.bot
+
+        async def _select_callback(sel_interaction: discord.Interaction):
+            selected_value = sel_interaction.data['values'][0]
+            slot = slots_by_value.get(selected_value)
+            if not slot:
+                await sel_interaction.response.send_message("❌ Slot not found.", ephemeral=True)
+                return
+
+            # Re-check at selection time
+            current_approved = set(await database.get_approved_slots(op['id']))
+            if slot['row'] in current_approved:
+                await sel_interaction.response.send_message(
+                    "❌ That slot was just filled. Please pick another.", ephemeral=True
+                )
+                return
+
+            await sel_interaction.response.defer(ephemeral=True)
+
+            # Write to sheet
+            try:
+                unit_role = _get_unit_role(member)
+                await loop.run_in_executor(
+                    None,
+                    sheets.assign_slot,
+                    op['sheet_id'],
+                    slot['row'],
+                    slot.get('col'),
+                    member.display_name,
+                    unit_role,
+                )
+            except Exception as e:
+                await sel_interaction.followup.send(
+                    f"⚠️ Could not update the sheet: `{e}`\nPlease update it manually.",
+                    ephemeral=True,
+                )
+                return
+
+            # Record directly as approved
+            request_id = await database.create_request(
+                guild_id=str(sel_interaction.guild_id),
+                operation_id=op['id'],
+                member_id=str(member.id),
+                member_name=member.display_name,
+                slot_label=slot['label'],
+                sheet_row=slot['row'],
+                sheet_col=slot.get('col'),
+                unit_role=_get_unit_role(member),
+            )
+            await database.approve_request(request_id, sel_interaction.user.display_name)
+
+            await sel_interaction.followup.send(
+                f"✅ Assigned **{member.display_name}** to **{slot['label']}**.",
+                ephemeral=True,
+            )
+
+            # DM the member
+            try:
+                await member.send(
+                    f"✅ **Slot Assigned**\n"
+                    f"An admin has assigned you to **{slot['label']}** "
+                    f"for operation **{op['name']}**."
+                )
+            except (discord.Forbidden, discord.NotFound):
+                pass
+
+            asyncio.create_task(_update_orbat(bot_ref, sel_interaction.guild, op))
+
+        view = discord.ui.View(timeout=120)
+        for menu in menus:
+            menu.callback = _select_callback
+            view.add_item(menu)
+
+        await interaction.followup.send(
+            f"Select a slot to assign to **{member.display_name}**:",
+            view=view,
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name='sync',
