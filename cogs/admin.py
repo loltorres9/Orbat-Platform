@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord import app_commands
@@ -10,18 +11,45 @@ from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, 
 
 _EVENT_TIME_FORMATS = ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%d-%m-%Y %H:%M']
 
+# Common timezone choices (max 25 for Discord)
+_TIMEZONE_CHOICES = [
+    app_commands.Choice(name='UTC',                       value='UTC'),
+    app_commands.Choice(name='London (GMT/BST)',          value='Europe/London'),
+    app_commands.Choice(name='Amsterdam/Paris/Berlin (CET/CEST)', value='Europe/Amsterdam'),
+    app_commands.Choice(name='Helsinki/Kyiv (EET/EEST)',  value='Europe/Helsinki'),
+    app_commands.Choice(name='Moscow (MSK)',               value='Europe/Moscow'),
+    app_commands.Choice(name='Dubai (GST)',                value='Asia/Dubai'),
+    app_commands.Choice(name='Karachi (PKT)',              value='Asia/Karachi'),
+    app_commands.Choice(name='Bangkok (ICT)',              value='Asia/Bangkok'),
+    app_commands.Choice(name='Singapore/KL (SGT)',         value='Asia/Singapore'),
+    app_commands.Choice(name='Tokyo (JST)',                value='Asia/Tokyo'),
+    app_commands.Choice(name='Sydney (AEST/AEDT)',         value='Australia/Sydney'),
+    app_commands.Choice(name='Auckland (NZST/NZDT)',       value='Pacific/Auckland'),
+    app_commands.Choice(name='New York (EST/EDT)',         value='America/New_York'),
+    app_commands.Choice(name='Chicago (CST/CDT)',          value='America/Chicago'),
+    app_commands.Choice(name='Denver (MST/MDT)',           value='America/Denver'),
+    app_commands.Choice(name='Los Angeles (PST/PDT)',      value='America/Los_Angeles'),
+]
 
-def _parse_event_time(raw: str) -> datetime:
-    """Parse a user-supplied event time string. Returns a UTC-aware datetime."""
+
+def _parse_event_time(raw: str, tz_name: str = 'UTC') -> datetime:
+    """Parse event time in the given timezone, return as naive UTC for storage."""
     raw = raw.strip()
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz = ZoneInfo('UTC')
+
     for fmt in _EVENT_TIME_FORMATS:
         try:
-            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            local_dt = datetime.strptime(raw, fmt).replace(tzinfo=tz)
+            # Convert to naive UTC for DB storage
+            return local_dt.astimezone(ZoneInfo('UTC')).replace(tzinfo=None)
         except ValueError:
             continue
     raise ValueError(
         f"Could not parse `{raw}`.\n"
-        "Use format `DD/MM/YYYY HH:MM` (UTC), e.g. `25/06/2025 19:00`"
+        "Use format `DD/MM/YYYY HH:MM`, e.g. `25/06/2025 19:00`"
     )
 
 ORBAT_CHANNEL_NAME = 'orbat'
@@ -58,7 +86,8 @@ class AdminCog(commands.Cog):
         parsed_event_time = None
         if event_time:
             try:
-                parsed_event_time = _parse_event_time(event_time)
+                tz_name = await database.get_guild_timezone(str(interaction.guild_id))
+                parsed_event_time = _parse_event_time(event_time, tz_name)
             except ValueError as e:
                 await interaction.followup.send(f"❌ {e}", ephemeral=True)
                 return
@@ -287,6 +316,21 @@ class AdminCog(commands.Cog):
 
 
     @app_commands.command(
+        name='set-timezone',
+        description='Set the server timezone used for all event times (Admin only)',
+    )
+    @app_commands.describe(timezone='Your local timezone')
+    @app_commands.choices(timezone=_TIMEZONE_CHOICES)
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_timezone(self, interaction: discord.Interaction, timezone: str):
+        await database.set_guild_timezone(str(interaction.guild_id), timezone)
+        await interaction.response.send_message(
+            f"✅ Server timezone set to **{timezone}**. "
+            f"Event times you enter will now be interpreted as {timezone}.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
         name='set-event-time',
         description='Set or update the event start time and reminder for the current operation (Admin only)',
     )
@@ -312,7 +356,8 @@ class AdminCog(commands.Cog):
             return
 
         try:
-            parsed = _parse_event_time(event_time)
+            tz_name = await database.get_guild_timezone(str(interaction.guild_id))
+            parsed = _parse_event_time(event_time, tz_name)
         except ValueError as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
             return

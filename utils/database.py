@@ -67,6 +67,12 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id TEXT PRIMARY KEY,
+                timezone TEXT NOT NULL DEFAULT 'UTC'
+            )
+        ''')
         # Add event scheduling columns to existing operations tables
         await db.execute('''
             ALTER TABLE operations ADD COLUMN IF NOT EXISTS
@@ -283,6 +289,26 @@ async def get_open_slots_message(guild_id: str):
         return await db.fetchrow(
             'SELECT channel_id, message_id FROM open_slots_messages WHERE guild_id = $1',
             guild_id,
+        )
+
+
+async def get_guild_timezone(guild_id: str) -> str:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            'SELECT timezone FROM guild_settings WHERE guild_id = $1', guild_id
+        )
+        return row['timezone'] if row else 'UTC'
+
+
+async def set_guild_timezone(guild_id: str, timezone: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            '''INSERT INTO guild_settings (guild_id, timezone)
+               VALUES ($1, $2)
+               ON CONFLICT (guild_id) DO UPDATE SET timezone = EXCLUDED.timezone''',
+            guild_id, timezone,
         )
 
 
