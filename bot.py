@@ -2,7 +2,7 @@ import asyncio
 import os
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from utils import database
@@ -51,7 +51,43 @@ class ORBATBot(commands.Bot):
             self.add_view(ApprovalView(request_id=req['id'], bot=self))
 
         print(f"{len(pending)} pending view(s) restored.")
+
+        self.reminder_task.start()
+        print("✅ Reminder task started.")
         print("--- setup_hook end ---")
+
+    @tasks.loop(minutes=1)
+    async def reminder_task(self):
+        ops = await database.get_operations_needing_reminder()
+        for op in ops:
+            await database.mark_reminder_fired(op['id'])
+            members = await database.get_approved_member_ids(op['id'])
+            if not members:
+                continue
+
+            minutes = op['reminder_minutes']
+            from datetime import timezone
+            import datetime as dt
+            event_ts = int(op['event_time'].replace(tzinfo=timezone.utc).timestamp())
+
+            for member_id, slot_label in members:
+                for guild in self.guilds:
+                    if str(guild.id) == str(op['guild_id']):
+                        try:
+                            member = await guild.fetch_member(int(member_id))
+                            await member.send(
+                                f"⏰ **Operation Reminder — {op['name']}**\n"
+                                f"Your operation starts <t:{event_ts}:R> (<t:{event_ts}:F>).\n"
+                                f"Your slot: **{slot_label}**\n"
+                                f"Get ready!"
+                            )
+                        except (discord.Forbidden, discord.NotFound):
+                            pass
+                        break
+
+    @reminder_task.before_loop
+    async def before_reminder_task(self):
+        await self.wait_until_ready()
 
     async def on_ready(self):
         print(f"on_ready fired. Guilds: {[g.name for g in self.guilds]}")

@@ -67,6 +67,19 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Add event scheduling columns to existing operations tables
+        await db.execute('''
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                event_time TIMESTAMP
+        ''')
+        await db.execute('''
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                reminder_minutes INTEGER DEFAULT 30
+        ''')
+        await db.execute('''
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                reminder_fired INTEGER DEFAULT 0
+        ''')
 
 
 async def get_active_operation(guild_id: str):
@@ -271,3 +284,47 @@ async def get_open_slots_message(guild_id: str):
             'SELECT channel_id, message_id FROM open_slots_messages WHERE guild_id = $1',
             guild_id,
         )
+
+
+async def set_event_time(operation_id: int, event_time, reminder_minutes: int):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            '''UPDATE operations
+               SET event_time = $1, reminder_minutes = $2, reminder_fired = 0
+               WHERE id = $3''',
+            event_time, reminder_minutes, operation_id,
+        )
+
+
+async def get_operations_needing_reminder():
+    """Return active operations whose reminder window has arrived but not yet fired."""
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            '''SELECT * FROM operations
+               WHERE is_active = 1
+               AND event_time IS NOT NULL
+               AND reminder_fired = 0
+               AND event_time - (reminder_minutes * INTERVAL '1 minute') <= CURRENT_TIMESTAMP
+               AND event_time > CURRENT_TIMESTAMP'''
+        )
+
+
+async def mark_reminder_fired(operation_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            'UPDATE operations SET reminder_fired = 1 WHERE id = $1',
+            operation_id,
+        )
+
+
+async def get_approved_member_ids(operation_id: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        rows = await db.fetch(
+            "SELECT member_id, slot_label FROM requests WHERE operation_id = $1 AND status = 'approved'",
+            operation_id,
+        )
+        return [(row['member_id'], row['slot_label']) for row in rows]

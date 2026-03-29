@@ -23,7 +23,7 @@ def _get_unit_role(member: discord.Member) -> Optional[str]:
     return None
 
 
-def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) -> discord.Embed:
+def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, event_time=None) -> discord.Embed:
     """Build a live ORBAT embed grouped by squad, mirroring the sheet's column layout."""
     # Reservists slots are displayed but excluded from all counts
     counted = [s for s in all_slots if s['squad'].lower() != 'reservists']
@@ -32,10 +32,15 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
     open_ = sum(1 for s in counted if not s['assigned_to'] and s['row'] not in pending_rows)
     total = len(counted)
 
+    event_line = (
+        f"\n🕐 **Operation starts:** <t:{int(event_time.timestamp())}:F>  (<t:{int(event_time.timestamp())}:R>)"
+        if event_time else ""
+    )
     embed = discord.Embed(
         title=f"🗺️ ORBAT — {operation_name}",
         description=(
             f"🟢 **{open_}** open  ·  🟡 **{pending}** pending  ·  🔴 **{filled}/{total}** filled"
+            f"{event_line}"
         ),
         color=discord.Color.dark_blue(),
     )
@@ -113,7 +118,7 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
     except Exception:
         return
     pending_rows = set(await database.get_pending_slots(op['id']))
-    embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows)
+    embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
     try:
         await msg.edit(embed=embed)
     except (discord.NotFound, discord.Forbidden):
@@ -911,7 +916,7 @@ class SlotsCog(commands.Cog):
             return
 
         pending_rows = set(await database.get_pending_slots(op['id']))
-        embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows)
+        embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
 
         msg = await target.send(embed=embed)
         await database.save_orbat_message(

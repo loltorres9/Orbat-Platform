@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -6,6 +7,22 @@ from discord.ext import commands
 
 from utils import database, sheets
 from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat
+
+_EVENT_TIME_FORMATS = ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%d-%m-%Y %H:%M']
+
+
+def _parse_event_time(raw: str) -> datetime:
+    """Parse a user-supplied event time string. Returns a UTC-aware datetime."""
+    raw = raw.strip()
+    for fmt in _EVENT_TIME_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError(
+        f"Could not parse `{raw}`.\n"
+        "Use format `DD/MM/YYYY HH:MM` (UTC), e.g. `25/06/2025 19:00`"
+    )
 
 ORBAT_CHANNEL_NAME = 'orbat'
 
@@ -18,10 +35,33 @@ class AdminCog(commands.Cog):
         name='setup-slots',
         description='Load slots from a Google Sheet for the current operation (Admin only)',
     )
-    @app_commands.describe(sheet_url='Full Google Sheets URL for this operation')
+    @app_commands.describe(
+        sheet_url='Full Google Sheets URL for this operation',
+        event_time='Event start time in UTC, e.g. 25/06/2025 19:00',
+        reminder_minutes='Send reminders this many minutes before the event (15, 30, or 60)',
+    )
+    @app_commands.choices(reminder_minutes=[
+        app_commands.Choice(name='15 minutes before', value=15),
+        app_commands.Choice(name='30 minutes before', value=30),
+        app_commands.Choice(name='60 minutes before', value=60),
+    ])
     @app_commands.default_permissions(manage_guild=True)
-    async def setup_slots(self, interaction: discord.Interaction, sheet_url: str):
+    async def setup_slots(
+        self,
+        interaction: discord.Interaction,
+        sheet_url: str,
+        event_time: str = None,
+        reminder_minutes: int = 30,
+    ):
         await interaction.response.defer(ephemeral=True)
+
+        parsed_event_time = None
+        if event_time:
+            try:
+                parsed_event_time = _parse_event_time(event_time)
+            except ValueError as e:
+                await interaction.followup.send(f"❌ {e}", ephemeral=True)
+                return
 
         try:
             loop = asyncio.get_event_loop()
@@ -36,7 +76,7 @@ class AdminCog(commands.Cog):
             )
             return
 
-        await database.create_operation(
+        op_id = await database.create_operation(
             guild_id=str(interaction.guild_id),
             name=data['operation_name'],
             sheet_url=sheet_url,
@@ -47,12 +87,21 @@ class AdminCog(commands.Cog):
             assigned_col=data['assigned_col'],
         )
 
+        if parsed_event_time:
+            await database.set_event_time(op_id, parsed_event_time, reminder_minutes)
+
         slot_count = len(data['slots'])
+        event_line = (
+            f"\n🕐 Event time: <t:{int(parsed_event_time.timestamp())}:F> "
+            f"(reminder {reminder_minutes} min before)"
+            if parsed_event_time else ""
+        )
         confirm_embed = discord.Embed(
             title='✅ Operation Loaded',
             description=(
                 f"**{data['operation_name']}**\n"
-                f"Found **{slot_count}** available slot(s).\n\n"
+                f"Found **{slot_count}** available slot(s).\n"
+                f"{event_line}\n\n"
                 f"Members can now use `/request-slot` to sign up."
             ),
             color=discord.Color.green(),
@@ -77,7 +126,7 @@ class AdminCog(commands.Cog):
                 loop = asyncio.get_event_loop()
                 all_data = await loop.run_in_executor(None, sheets.load_all_slots, sheet_url)
                 pending_rows = set(await database.get_pending_slots(op['id']))
-                orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows)
+                orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows, parsed_event_time)
                 msg = await orbat_channel.send(embed=orbat_embed)
                 await database.save_orbat_message(
                     str(interaction.guild_id), str(orbat_channel.id), str(msg.id)
@@ -221,6 +270,47 @@ class AdminCog(commands.Cog):
             ephemeral=True,
         )
 
+
+    @app_commands.command(
+        name='set-event-time',
+        description='Set or update the event start time and reminder for the current operation (Admin only)',
+    )
+    @app_commands.describe(
+        event_time='Event start time in UTC, e.g. 25/06/2025 19:00',
+        reminder_minutes='Send reminders this many minutes before the event (15, 30, or 60)',
+    )
+    @app_commands.choices(reminder_minutes=[
+        app_commands.Choice(name='15 minutes before', value=15),
+        app_commands.Choice(name='30 minutes before', value=30),
+        app_commands.Choice(name='60 minutes before', value=60),
+    ])
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_event_time(
+        self,
+        interaction: discord.Interaction,
+        event_time: str,
+        reminder_minutes: int = 30,
+    ):
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.response.send_message("❌ No active operation.", ephemeral=True)
+            return
+
+        try:
+            parsed = _parse_event_time(event_time)
+        except ValueError as e:
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+
+        await database.set_event_time(op['id'], parsed, reminder_minutes)
+
+        asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
+
+        await interaction.response.send_message(
+            f"✅ Event time set to <t:{int(parsed.timestamp())}:F> "
+            f"with a **{reminder_minutes}-minute** reminder.",
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name='assign-slot',
