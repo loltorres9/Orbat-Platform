@@ -123,7 +123,7 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
     pending_rows = set(await database.get_pending_slots(op['id']))
     embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
     try:
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed, view=OrbatRequestButton(bot))
     except (discord.NotFound, discord.Forbidden):
         pass
 
@@ -542,6 +542,100 @@ class ApprovalView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
+# Persistent "Request a Slot" button attached to the ORBAT embed
+# ---------------------------------------------------------------------------
+
+class OrbatRequestButton(discord.ui.View):
+    """Persistent view with a single button attached to the live ORBAT embed."""
+
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label='📋 Request a Slot',
+        style=discord.ButtonStyle.primary,
+        custom_id='orbat_request_slot',
+    )
+    async def request_slot_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            op = await database.get_active_operation(str(interaction.guild_id))
+            if not op:
+                await interaction.followup.send(
+                    "❌ No active operation.", ephemeral=True
+                )
+                return
+
+            existing = await database.get_member_active_request(
+                str(interaction.guild_id), op['id'], str(interaction.user.id)
+            )
+            if existing:
+                await interaction.followup.send(
+                    f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+                    "You can only hold one slot per operation.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                loop = asyncio.get_event_loop()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "❌ Timed out loading the sheet. Try again in a moment.",
+                    ephemeral=True,
+                )
+                return
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Failed to load slots: `{e}`", ephemeral=True
+                )
+                return
+
+            pending_rows = set(await database.get_pending_slots(op['id']))
+            approved_rows = set(await database.get_approved_slots(op['id']))
+            available = [s for s in data['slots'] if s['row'] not in approved_rows]
+
+            if not available:
+                await interaction.followup.send(
+                    "❌ All slots are filled for this operation.", ephemeral=True
+                )
+                return
+
+            open_count = sum(1 for s in available if s['row'] not in pending_rows)
+            pending_count = sum(1 for s in available if s['row'] in pending_rows)
+
+            embed = discord.Embed(
+                title=f"🎖️ {data['operation_name']} — Slot Request",
+                description=(
+                    f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
+                    "Select your slot from the menu(s) below.\n"
+                    "Pending slots are reserved until approved or denied."
+                ),
+                color=discord.Color.blurple(),
+            )
+            view = SlotRequestView(
+                slots=available,
+                operation_id=op['id'],
+                pending_rows=pending_rows,
+                approved_rows=approved_rows,
+                bot=self.bot,
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Unexpected error: `{e}`", ephemeral=True)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 
@@ -921,7 +1015,7 @@ class SlotsCog(commands.Cog):
         pending_rows = set(await database.get_pending_slots(op['id']))
         embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
 
-        msg = await target.send(embed=embed)
+        msg = await target.send(embed=embed, view=OrbatRequestButton(self.bot))
         await database.save_orbat_message(
             str(interaction.guild_id), str(target.id), str(msg.id)
         )

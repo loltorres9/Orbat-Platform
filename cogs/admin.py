@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import database, sheets
-from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat
+from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat, OrbatRequestButton
 
 _EVENT_TIME_FORMATS = ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%d-%m-%Y %H:%M']
 
@@ -171,7 +171,7 @@ class AdminCog(commands.Cog):
                 )
                 pending_rows = set(await database.get_pending_slots(op['id']))
                 orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows, parsed_event_time)
-                msg = await orbat_channel.send(embed=orbat_embed)
+                msg = await orbat_channel.send(embed=orbat_embed, view=OrbatRequestButton(self.bot))
                 await database.save_orbat_message(
                     str(interaction.guild_id), str(orbat_channel.id), str(msg.id)
                 )

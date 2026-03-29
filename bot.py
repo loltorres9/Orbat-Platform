@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from utils import database
-from cogs.slots import ApprovalView
+from cogs.slots import ApprovalView, OrbatRequestButton
 
 load_dotenv()
 
@@ -47,6 +47,9 @@ class ORBATBot(commands.Bot):
 
         # Re-register approval views for all pending requests so buttons
         # continue to work after a bot restart.
+        # Persistent ORBAT request button — one instance covers all guilds
+        self.add_view(OrbatRequestButton(bot=self))
+
         pending = await database.get_all_pending_requests()
         for req in pending:
             self.add_view(ApprovalView(request_id=req['id'], bot=self))
