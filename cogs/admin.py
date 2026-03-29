@@ -364,6 +364,8 @@ class AdminCog(commands.Cog):
 
         await database.set_event_time(op['id'], parsed, reminder_minutes)
 
+        # Re-fetch so _update_orbat picks up the new event_time
+        op = await database.get_active_operation(str(interaction.guild_id))
         asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
 
         await interaction.response.send_message(
