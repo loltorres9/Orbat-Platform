@@ -121,9 +121,23 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
     except Exception:
         return
     pending_rows = set(await database.get_pending_slots(op['id']))
+    approved_rows = set(await database.get_approved_slots(op['id']))
     embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
+
+    # Load available slots for the select menus (load_all_slots gives all slots including filled)
     try:
-        await msg.edit(embed=embed, view=OrbatRequestButton(bot))
+        loop = asyncio.get_event_loop()
+        slot_data = await asyncio.wait_for(
+            loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+            timeout=30,
+        )
+        available = [s for s in slot_data['slots'] if s['row'] not in approved_rows]
+        view = OrbatLiveView(bot, available, op['id'], pending_rows, approved_rows)
+    except Exception:
+        view = OrbatRequestButton(bot)
+
+    try:
+        await msg.edit(embed=embed, view=view)
     except (discord.NotFound, discord.Forbidden):
         pass
 
@@ -214,6 +228,109 @@ def _build_select_menus(
 
 
 # ---------------------------------------------------------------------------
+# Shared slot submission logic
+# ---------------------------------------------------------------------------
+
+async def _process_slot_selection(
+    interaction: discord.Interaction,
+    slot: dict,
+    operation_id: int,
+    bot: commands.Bot,
+):
+    """
+    Validate and submit a slot request. Handles all DB writes, approval post,
+    DM, and ORBAT refresh. Caller must NOT have deferred the interaction yet.
+    """
+    pending = set(await database.get_pending_slots(operation_id))
+    approved = set(await database.get_approved_slots(operation_id))
+
+    if slot['row'] in approved:
+        await interaction.response.send_message(
+            "❌ That slot was just filled. Please choose another.", ephemeral=True
+        )
+        return
+
+    if slot['row'] in pending:
+        await interaction.response.send_message(
+            "⏳ That slot already has a pending request. Please choose another.", ephemeral=True
+        )
+        return
+
+    existing = await database.get_member_active_request(
+        str(interaction.guild_id), operation_id, str(interaction.user.id)
+    )
+    if existing:
+        await interaction.response.send_message(
+            f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+            "You can only hold one slot per operation.",
+            ephemeral=True,
+        )
+        return
+
+    unit_role = _get_unit_role(interaction.user)
+    request_id = await database.create_request(
+        guild_id=str(interaction.guild_id),
+        operation_id=operation_id,
+        member_id=str(interaction.user.id),
+        member_name=interaction.user.display_name,
+        slot_label=slot['label'],
+        sheet_row=slot['row'],
+        sheet_col=slot.get('col'),
+        unit_role=unit_role,
+    )
+
+    await interaction.response.send_message(
+        f"✅ Request submitted for **{slot['label']}**!\n"
+        "Status: ⏳ Pending approval — you'll receive a DM when an admin reviews it.",
+        ephemeral=True,
+    )
+
+    # Post to #slot-approvals
+    approval_channel = discord.utils.get(
+        interaction.guild.text_channels, name=APPROVAL_CHANNEL_NAME
+    )
+    if not approval_channel:
+        try:
+            approval_channel = await interaction.guild.create_text_channel(
+                APPROVAL_CHANNEL_NAME,
+                topic='Slot approval requests for Arma 3 operations',
+            )
+        except discord.Forbidden:
+            return
+
+    op = await database.get_active_operation(str(interaction.guild_id))
+    embed = discord.Embed(title='📋 Slot Request', color=discord.Color.yellow())
+    embed.add_field(name='Member', value=interaction.user.mention, inline=True)
+    embed.add_field(name='Requested Slot', value=f"**{slot['label']}**", inline=True)
+    embed.add_field(name='Operation', value=op['name'] if op else 'Unknown', inline=False)
+    if unit_role:
+        embed.add_field(name='Unit', value=unit_role, inline=True)
+    embed.set_footer(text=f"Request ID: {request_id}")
+    embed.timestamp = discord.utils.utcnow()
+
+    approval_view = ApprovalView(request_id=request_id, bot=bot)
+    msg = await approval_channel.send(embed=embed, view=approval_view)
+    bot.add_view(approval_view)
+
+    await database.update_request_message(
+        request_id, str(msg.id), str(approval_channel.id)
+    )
+
+    try:
+        await interaction.user.send(
+            f"✅ **Slot Request Submitted**\n"
+            f"Operation: **{op['name'] if op else 'Unknown'}**\n"
+            f"Slot: **{slot['label']}**\n"
+            f"Status: ⏳ Pending — an admin will review your request soon."
+        )
+    except discord.Forbidden:
+        pass
+
+    if op:
+        asyncio.create_task(_update_orbat(bot, interaction.guild, op))
+
+
+# ---------------------------------------------------------------------------
 # Slot request view (ephemeral, shown only to the requesting member)
 # ---------------------------------------------------------------------------
 
@@ -238,103 +355,12 @@ class SlotRequestView(discord.ui.View):
     async def _select_callback(self, interaction: discord.Interaction):
         selected_value = interaction.data['values'][0]
         slot = self.slots_by_value.get(selected_value)
-
         if not slot:
             await interaction.response.send_message(
                 "❌ Slot not found. Please try `/request-slot` again.", ephemeral=True
             )
             return
-
-        # Re-check availability at the moment of selection
-        pending = set(await database.get_pending_slots(self.operation_id))
-        approved = set(await database.get_approved_slots(self.operation_id))
-
-        if slot['row'] in approved:
-            await interaction.response.send_message(
-                "❌ That slot was just filled. Please choose another.", ephemeral=True
-            )
-            return
-
-        if slot['row'] in pending:
-            await interaction.response.send_message(
-                "⏳ That slot already has a pending request. Please choose another.", ephemeral=True
-            )
-            return
-
-        existing = await database.get_member_active_request(
-            str(interaction.guild_id), self.operation_id, str(interaction.user.id)
-        )
-        if existing:
-            await interaction.response.send_message(
-                f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
-                "You can only hold one slot per operation.",
-                ephemeral=True,
-            )
-            return
-
-        unit_role = _get_unit_role(interaction.user)
-        request_id = await database.create_request(
-            guild_id=str(interaction.guild_id),
-            operation_id=self.operation_id,
-            member_id=str(interaction.user.id),
-            member_name=interaction.user.display_name,
-            slot_label=slot['label'],
-            sheet_row=slot['row'],
-            sheet_col=slot.get('col'),
-            unit_role=unit_role,
-        )
-
-        await interaction.response.send_message(
-            f"✅ Request submitted for **{slot['label']}**!\n"
-            "Status: ⏳ Pending approval — you'll receive a DM when an admin reviews it.",
-            ephemeral=True,
-        )
-
-        # Post to #slot-approvals (create channel if it doesn't exist)
-        approval_channel = discord.utils.get(
-            interaction.guild.text_channels, name=APPROVAL_CHANNEL_NAME
-        )
-        if not approval_channel:
-            try:
-                approval_channel = await interaction.guild.create_text_channel(
-                    APPROVAL_CHANNEL_NAME,
-                    topic='Slot approval requests for Arma 3 operations',
-                )
-            except discord.Forbidden:
-                return  # Can't create channel; skip posting
-
-        op = await database.get_active_operation(str(interaction.guild_id))
-        embed = discord.Embed(title='📋 Slot Request', color=discord.Color.yellow())
-        embed.add_field(name='Member', value=interaction.user.mention, inline=True)
-        embed.add_field(name='Requested Slot', value=f"**{slot['label']}**", inline=True)
-        embed.add_field(name='Operation', value=op['name'] if op else 'Unknown', inline=False)
-        if unit_role:
-            embed.add_field(name='Unit', value=unit_role, inline=True)
-        embed.set_footer(text=f"Request ID: {request_id}")
-        embed.timestamp = discord.utils.utcnow()
-
-        approval_view = ApprovalView(request_id=request_id, bot=self.bot)
-        msg = await approval_channel.send(embed=embed, view=approval_view)
-        self.bot.add_view(approval_view)  # keep it alive across restarts
-
-        await database.update_request_message(
-            request_id, str(msg.id), str(approval_channel.id)
-        )
-
-        # DM the requesting member
-        try:
-            await interaction.user.send(
-                f"✅ **Slot Request Submitted**\n"
-                f"Operation: **{op['name'] if op else 'Unknown'}**\n"
-                f"Slot: **{slot['label']}**\n"
-                f"Status: ⏳ Pending — an admin will review your request soon."
-            )
-        except discord.Forbidden:
-            pass
-
-        # Refresh the live ORBAT board (fire-and-forget)
-        if op:
-            asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
+        await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +565,53 @@ class ApprovalView(discord.ui.View):
             requester_id=int(req['member_id']),
         )
         await interaction.response.send_modal(modal)
+
+
+# ---------------------------------------------------------------------------
+# Live ORBAT view — slot select menus + fallback button, rebuilt on each update
+# ---------------------------------------------------------------------------
+
+class OrbatLiveView(discord.ui.View):
+    """
+    Attached to the ORBAT message on every edit. Contains the slot select
+    menus so members can request a slot directly from the ORBAT post.
+    The button (same custom_id as OrbatRequestButton) acts as a fallback
+    after bot restarts before the next ORBAT update rebuilds the selects.
+    """
+
+    def __init__(self, bot: commands.Bot, slots: list, operation_id: int,
+                 pending_rows: set, approved_rows: set):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.slots_by_value = {s['value']: s for s in slots}
+        self.operation_id = operation_id
+
+        for menu in _build_select_menus(slots, pending_rows, approved_rows):
+            menu.callback = self._select_callback
+            self.add_item(menu)
+
+        btn = discord.ui.Button(
+            label='📋 Request a Slot',
+            style=discord.ButtonStyle.secondary,
+            custom_id='orbat_request_slot',
+            row=4,
+        )
+        btn.callback = self._button_callback
+        self.add_item(btn)
+
+    async def _select_callback(self, interaction: discord.Interaction):
+        selected_value = interaction.data['values'][0]
+        slot = self.slots_by_value.get(selected_value)
+        if not slot:
+            await interaction.response.send_message(
+                "❌ Slot not found. Try the button below instead.", ephemeral=True
+            )
+            return
+        await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
+
+    async def _button_callback(self, interaction: discord.Interaction):
+        # Delegate to the same handler as OrbatRequestButton
+        await OrbatRequestButton(self.bot).request_slot_button(interaction, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1013,9 +1086,21 @@ class SlotsCog(commands.Cog):
             return
 
         pending_rows = set(await database.get_pending_slots(op['id']))
+        approved_rows = set(await database.get_approved_slots(op['id']))
         embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
 
-        msg = await target.send(embed=embed, view=OrbatRequestButton(self.bot))
+        try:
+            loop = asyncio.get_event_loop()
+            slot_data = await asyncio.wait_for(
+                loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                timeout=30,
+            )
+            available = [s for s in slot_data['slots'] if s['row'] not in approved_rows]
+            orbat_view = OrbatLiveView(self.bot, available, op['id'], pending_rows, approved_rows)
+        except Exception:
+            orbat_view = OrbatRequestButton(self.bot)
+
+        msg = await target.send(embed=embed, view=orbat_view)
         await database.save_orbat_message(
             str(interaction.guild_id), str(target.id), str(msg.id)
         )
