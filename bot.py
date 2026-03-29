@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -65,10 +66,10 @@ class ORBATBot(commands.Bot):
             if not members:
                 continue
 
-            minutes = op['reminder_minutes']
-            from datetime import timezone
-            import datetime as dt
-            event_ts = int(op['event_time'].replace(tzinfo=timezone.utc).timestamp())
+            event_dt = op['event_time']
+            if event_dt.tzinfo is None:
+                event_dt = event_dt.replace(tzinfo=timezone.utc)
+            event_ts = int(event_dt.timestamp())
 
             for member_id, slot_label in members:
                 for guild in self.guilds:

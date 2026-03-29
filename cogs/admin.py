@@ -65,7 +65,16 @@ class AdminCog(commands.Cog):
 
         try:
             loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_slots, sheet_url)
+            data = await asyncio.wait_for(
+                loop.run_in_executor(None, sheets.load_slots, sheet_url),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                "❌ Timed out reading the sheet (30s). Make sure it's shared with the service account.",
+                ephemeral=True,
+            )
+            return
         except ValueError as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
             return
@@ -76,19 +85,22 @@ class AdminCog(commands.Cog):
             )
             return
 
-        op_id = await database.create_operation(
-            guild_id=str(interaction.guild_id),
-            name=data['operation_name'],
-            sheet_url=sheet_url,
-            sheet_id=data['sheet_id'],
-            squad_col=data['squad_col'],
-            role_col=data['role_col'],
-            status_col=data['status_col'],
-            assigned_col=data['assigned_col'],
-        )
-
-        if parsed_event_time:
-            await database.set_event_time(op_id, parsed_event_time, reminder_minutes)
+        try:
+            op_id = await database.create_operation(
+                guild_id=str(interaction.guild_id),
+                name=data['operation_name'],
+                sheet_url=sheet_url,
+                sheet_id=data['sheet_id'],
+                squad_col=data['squad_col'],
+                role_col=data['role_col'],
+                status_col=data['status_col'],
+                assigned_col=data['assigned_col'],
+            )
+            if parsed_event_time:
+                await database.set_event_time(op_id, parsed_event_time, reminder_minutes)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Database error: `{e}`", ephemeral=True)
+            return
 
         slot_count = len(data['slots'])
         event_line = (
@@ -124,7 +136,10 @@ class AdminCog(commands.Cog):
             try:
                 op = await database.get_active_operation(str(interaction.guild_id))
                 loop = asyncio.get_event_loop()
-                all_data = await loop.run_in_executor(None, sheets.load_all_slots, sheet_url)
+                all_data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_all_slots, sheet_url),
+                    timeout=30,
+                )
                 pending_rows = set(await database.get_pending_slots(op['id']))
                 orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows, parsed_event_time)
                 msg = await orbat_channel.send(embed=orbat_embed)

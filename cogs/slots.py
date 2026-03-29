@@ -114,7 +114,10 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
         return
     try:
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url'])
+        data = await asyncio.wait_for(
+            loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url']),
+            timeout=30,
+        )
     except Exception:
         return
     pending_rows = set(await database.get_pending_slots(op['id']))
