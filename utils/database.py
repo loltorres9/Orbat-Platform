@@ -349,6 +349,18 @@ async def mark_reminder_fired(operation_id: int):
         )
 
 
+async def get_competing_requests(operation_id: int, sheet_row: int, exclude_request_id: int) -> list:
+    """Return all other pending requests for the same slot row."""
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """SELECT * FROM requests
+               WHERE operation_id = $1 AND sheet_row = $2
+               AND id != $3 AND status = 'pending'""",
+            operation_id, sheet_row, exclude_request_id,
+        )
+
+
 async def get_approved_member_ids(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:

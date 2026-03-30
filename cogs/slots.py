@@ -189,7 +189,7 @@ def _build_select_menus(
             if slot['row'] in approved_rows:
                 continue
             emoji = '🟡' if slot['row'] in pending_rows else '🟢'
-            status = 'Pending approval' if slot['row'] in pending_rows else 'Available'
+            status = 'Also requested — compete for slot' if slot['row'] in pending_rows else 'Available'
             # Show full "Squad – Role" as label so squad context is always visible
             full_label = f"{slot['squad']} – {slot['role']}"
             options.append(
@@ -233,12 +233,6 @@ async def _process_slot_selection(
     if slot['row'] in approved:
         await interaction.response.send_message(
             "❌ That slot was just filled. Please choose another.", ephemeral=True
-        )
-        return
-
-    if slot['row'] in pending:
-        await interaction.response.send_message(
-            "⏳ That slot already has a pending request. Please choose another.", ephemeral=True
         )
         return
 
@@ -536,7 +530,7 @@ class ApprovalView(discord.ui.View):
             "✅ Request approved and sheet updated!", ephemeral=True
         )
 
-        # DM the member
+        # DM the approved member
         try:
             member = await interaction.guild.fetch_member(int(req['member_id']))
             await member.send(
@@ -547,6 +541,46 @@ class ApprovalView(discord.ui.View):
             )
         except (discord.Forbidden, discord.NotFound):
             pass
+
+        # Auto-deny any competing requests for the same slot
+        if op:
+            competitors = await database.get_competing_requests(
+                op['id'], req['sheet_row'], self.request_id
+            )
+            for comp in competitors:
+                await database.deny_request(
+                    comp['id'],
+                    interaction.user.display_name,
+                    reason='Slot was awarded to another member',
+                )
+                # Update their approval message
+                if comp['approval_channel_id'] and comp['approval_message_id']:
+                    try:
+                        ch = interaction.guild.get_channel(int(comp['approval_channel_id']))
+                        if ch:
+                            msg = await ch.fetch_message(int(comp['approval_message_id']))
+                            comp_embed = msg.embeds[0].copy() if msg.embeds else discord.Embed()
+                            comp_embed.color = discord.Color.dark_gray()
+                            comp_embed.add_field(
+                                name='❌ Denied',
+                                value=f"Slot awarded to **{req['member_name']}**",
+                                inline=False,
+                            )
+                            await msg.edit(embed=comp_embed, view=None)
+                    except (discord.NotFound, discord.Forbidden):
+                        pass
+                # DM the competing member
+                try:
+                    comp_member = await interaction.guild.fetch_member(int(comp['member_id']))
+                    await comp_member.send(
+                        f"❌ **Slot Request Denied**\n"
+                        f"Operation: **{op['name']}**\n"
+                        f"Slot: **{comp['slot_label']}**\n"
+                        f"This slot was awarded to another member. "
+                        f"You can request a different slot with `/request-slot`."
+                    )
+                except (discord.Forbidden, discord.NotFound):
+                    pass
 
         # Refresh the live ORBAT board (fire-and-forget)
         if op:
