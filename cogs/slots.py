@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional
 
 import discord
 from discord import app_commands
@@ -14,7 +15,7 @@ APPROVAL_CHANNEL_NAME = 'slot-approvals'
 UNIT_ROLES = {'2nd USC', 'CNTO', 'PXG', 'TFP'}
 
 
-def _get_unit_role(member: discord.Member) -> str | None:
+def _get_unit_role(member: discord.Member) -> Optional[str]:
     """Return the first UNIT_ROLES role the member has, or None."""
     for role in member.roles:
         if role.name in UNIT_ROLES:
@@ -22,17 +23,24 @@ def _get_unit_role(member: discord.Member) -> str | None:
     return None
 
 
-def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) -> discord.Embed:
+def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, event_time=None) -> discord.Embed:
     """Build a live ORBAT embed grouped by squad, mirroring the sheet's column layout."""
-    filled = sum(1 for s in all_slots if s['assigned_to'])
-    pending = sum(1 for s in all_slots if not s['assigned_to'] and s['row'] in pending_rows)
-    open_ = sum(1 for s in all_slots if not s['assigned_to'] and s['row'] not in pending_rows)
-    total = len(all_slots)
+    # Reservists slots are displayed but excluded from all counts
+    counted = [s for s in all_slots if s['squad'].lower() != 'reservists']
+    filled = sum(1 for s in counted if s['assigned_to'])
+    pending = sum(1 for s in counted if not s['assigned_to'] and s['row'] in pending_rows)
+    open_ = sum(1 for s in counted if not s['assigned_to'] and s['row'] not in pending_rows)
+    total = len(counted)
 
+    event_line = (
+        f"\n🕐 **Operation starts:** <t:{int(event_time.timestamp())}:F>  (<t:{int(event_time.timestamp())}:R>)"
+        if event_time else ""
+    )
     embed = discord.Embed(
         title=f"🗺️ ORBAT — {operation_name}",
         description=(
-            f"🟢 **{open_}** open  ·  🟡 **{pending}** pending  ·  ✅ **{filled}/{total}** filled"
+            f"🟢 **{open_}** open  ·  🟡 **{pending}** pending  ·  🔴 **{filled}/{total}** filled"
+            f"{event_line}"
         ),
         color=discord.Color.dark_blue(),
     )
@@ -55,7 +63,7 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set) 
         lines = []
         for slot in slots:
             if slot['assigned_to']:
-                lines.append(f"✅ ~~{slot['role']}~~ — {slot['assigned_to']}")
+                lines.append(f"🔴 {slot['role']} — {slot['assigned_to']}")
             elif slot['row'] in pending_rows:
                 lines.append(f"🟡 {slot['role']} *(pending)*")
             else:
@@ -106,18 +114,21 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
         return
     try:
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url'])
+        data = await asyncio.wait_for(
+            loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url']),
+            timeout=30,
+        )
     except Exception:
         return
     pending_rows = set(await database.get_pending_slots(op['id']))
-    embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows)
+    embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
     try:
-        await msg.edit(embed=embed)
+        await msg.edit(embed=embed, view=OrbatRequestButton(bot))
     except (discord.NotFound, discord.Forbidden):
         pass
 
 
-def _can_action_request(approver: discord.Member, unit_role: str | None) -> bool:
+def _can_action_request(approver: discord.Member, unit_role: Optional[str]) -> bool:
     """
     Returns True if *approver* is allowed to approve/deny a request that
     belongs to *unit_role*.
@@ -162,7 +173,13 @@ def _build_select_menus(
         groups = []
         for i in range(0, len(flat), 25):
             chunk = flat[i : i + 25]
-            groups.append((f"Slots {i + 1}–{i + len(chunk)}", chunk))
+            first_squad = chunk[0]['squad']
+            last_squad = chunk[-1]['squad']
+            if first_squad == last_squad:
+                label = first_squad
+            else:
+                label = f"{first_squad[:30]} … {last_squad[:30]}"
+            groups.append((label, chunk))
         groups = groups[:5]
 
     menus = []
@@ -172,19 +189,21 @@ def _build_select_menus(
             if slot['row'] in approved_rows:
                 continue
             emoji = '🟡' if slot['row'] in pending_rows else '🟢'
-            desc = f"{slot['squad']} – {'Pending approval' if slot['row'] in pending_rows else 'Available'}"
+            status = 'Also requested — compete for slot' if slot['row'] in pending_rows else 'Available'
+            # Show full "Squad – Role" as label so squad context is always visible
+            full_label = f"{slot['squad']} – {slot['role']}"
             options.append(
                 discord.SelectOption(
-                    label=slot['role'][:100],
+                    label=full_label[:100],
                     value=slot['value'],
-                    description=desc[:100],
+                    description=status,
                     emoji=emoji,
                 )
             )
 
         if options:
             select = discord.ui.Select(
-                placeholder=f"Select a slot — {group_name}"[:150],
+                placeholder=f"{group_name}"[:150],
                 options=options,
                 min_values=1,
                 max_values=1,
@@ -192,6 +211,133 @@ def _build_select_menus(
             menus.append(select)
 
     return menus
+
+
+# ---------------------------------------------------------------------------
+# Shared slot submission logic
+# ---------------------------------------------------------------------------
+
+async def _process_slot_selection(
+    interaction: discord.Interaction,
+    slot: dict,
+    operation_id: int,
+    bot: commands.Bot,
+):
+    """
+    Validate and submit a slot request. Handles all DB writes, approval post,
+    DM, and ORBAT refresh. Caller must NOT have deferred the interaction yet.
+    """
+    pending = set(await database.get_pending_slots(operation_id))
+    approved = set(await database.get_approved_slots(operation_id))
+
+    if slot['row'] in approved:
+        await interaction.response.send_message(
+            "❌ That slot was just filled. Please choose another.", ephemeral=True
+        )
+        return
+
+    existing = await database.get_member_active_request(
+        str(interaction.guild_id), operation_id, str(interaction.user.id)
+    )
+    if existing:
+        await interaction.response.send_message(
+            f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+            "You can only hold one slot per operation.",
+            ephemeral=True,
+        )
+        return
+
+    unit_role = _get_unit_role(interaction.user)
+    request_id = await database.create_request(
+        guild_id=str(interaction.guild_id),
+        operation_id=operation_id,
+        member_id=str(interaction.user.id),
+        member_name=interaction.user.display_name,
+        slot_label=slot['label'],
+        sheet_row=slot['row'],
+        sheet_col=slot.get('col'),
+        unit_role=unit_role,
+    )
+
+    await interaction.response.send_message(
+        f"✅ Request submitted for **{slot['label']}**!\n"
+        "Status: ⏳ Pending approval — you'll receive a DM when an admin reviews it.",
+        ephemeral=True,
+    )
+
+    # Post to #slot-approvals
+    approval_channel = discord.utils.get(
+        interaction.guild.text_channels, name=APPROVAL_CHANNEL_NAME
+    )
+    if not approval_channel:
+        try:
+            approval_channel = await interaction.guild.create_text_channel(
+                APPROVAL_CHANNEL_NAME,
+                topic='Slot approval requests for Arma 3 operations',
+            )
+        except discord.Forbidden:
+            return
+
+    op = await database.get_active_operation(str(interaction.guild_id))
+    embed = discord.Embed(title='📋 Slot Request', color=discord.Color.yellow())
+    embed.add_field(name='Member', value=interaction.user.mention, inline=True)
+    embed.add_field(name='Requested Slot', value=f"**{slot['label']}**", inline=True)
+    embed.add_field(name='Operation', value=op['name'] if op else 'Unknown', inline=False)
+    if unit_role:
+        embed.add_field(name='Unit', value=unit_role, inline=True)
+    embed.set_footer(text=f"Request ID: {request_id}")
+    embed.timestamp = discord.utils.utcnow()
+
+    approval_view = ApprovalView(request_id=request_id, bot=bot)
+    msg = await approval_channel.send(embed=embed, view=approval_view)
+    bot.add_view(approval_view)
+
+    await database.update_request_message(
+        request_id, str(msg.id), str(approval_channel.id)
+    )
+
+    try:
+        await interaction.user.send(
+            f"✅ **Slot Request Submitted**\n"
+            f"Operation: **{op['name'] if op else 'Unknown'}**\n"
+            f"Slot: **{slot['label']}**\n"
+            f"Status: ⏳ Pending — an admin will review your request soon."
+        )
+    except discord.Forbidden:
+        pass
+
+    if op:
+        asyncio.create_task(_update_orbat(bot, interaction.guild, op))
+
+
+async def _void_approval_message(bot: commands.Bot, guild: discord.Guild, req):
+    """Edit the approval message to show the request was cancelled, and disable the buttons."""
+    if not req.get('approval_message_id') or not req.get('approval_channel_id'):
+        return
+    channel = guild.get_channel(int(req['approval_channel_id']))
+    if not channel:
+        return
+    try:
+        msg = await channel.fetch_message(int(req['approval_message_id']))
+    except (discord.NotFound, discord.Forbidden):
+        return
+
+    # Rebuild the embed in grey with a cancelled notice
+    original = msg.embeds[0] if msg.embeds else None
+    cancelled_embed = discord.Embed(
+        title='📋 Slot Request — Cancelled',
+        color=discord.Color.dark_gray(),
+    )
+    if original:
+        for field in original.fields:
+            cancelled_embed.add_field(name=field.name, value=field.value, inline=field.inline)
+    cancelled_embed.set_footer(text='Member cancelled their request')
+    cancelled_embed.timestamp = discord.utils.utcnow()
+
+    try:
+        await msg.edit(embed=cancelled_embed, view=discord.ui.View())
+    except (discord.NotFound, discord.Forbidden):
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -219,99 +365,12 @@ class SlotRequestView(discord.ui.View):
     async def _select_callback(self, interaction: discord.Interaction):
         selected_value = interaction.data['values'][0]
         slot = self.slots_by_value.get(selected_value)
-
         if not slot:
             await interaction.response.send_message(
                 "❌ Slot not found. Please try `/request-slot` again.", ephemeral=True
             )
             return
-
-        # Re-check availability at the moment of selection
-        pending = set(await database.get_pending_slots(self.operation_id))
-        approved = set(await database.get_approved_slots(self.operation_id))
-
-        if slot['row'] in approved:
-            await interaction.response.send_message(
-                "❌ That slot was just filled. Please choose another.", ephemeral=True
-            )
-            return
-
-        if slot['row'] in pending:
-            await interaction.response.send_message(
-                "⏳ That slot already has a pending request. Please choose another.", ephemeral=True
-            )
-            return
-
-        existing = await database.get_member_active_request(
-            str(interaction.guild_id), self.operation_id, str(interaction.user.id)
-        )
-        if existing:
-            await interaction.response.send_message(
-                f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
-                "You can only hold one slot per operation.",
-                ephemeral=True,
-            )
-            return
-
-        unit_role = _get_unit_role(interaction.user)
-        request_id = await database.create_request(
-            guild_id=str(interaction.guild_id),
-            operation_id=self.operation_id,
-            member_id=str(interaction.user.id),
-            member_name=interaction.user.display_name,
-            slot_label=slot['label'],
-            sheet_row=slot['row'],
-            sheet_col=slot.get('col'),
-            unit_role=unit_role,
-        )
-
-        await interaction.response.send_message(
-            f"✅ Request submitted for **{slot['label']}**!\n"
-            "Status: ⏳ Pending approval — you'll receive a DM when an admin reviews it.",
-            ephemeral=True,
-        )
-
-        # Post to #slot-approvals (create channel if it doesn't exist)
-        approval_channel = discord.utils.get(
-            interaction.guild.text_channels, name=APPROVAL_CHANNEL_NAME
-        )
-        if not approval_channel:
-            try:
-                approval_channel = await interaction.guild.create_text_channel(
-                    APPROVAL_CHANNEL_NAME,
-                    topic='Slot approval requests for Arma 3 operations',
-                )
-            except discord.Forbidden:
-                return  # Can't create channel; skip posting
-
-        op = await database.get_active_operation(str(interaction.guild_id))
-        embed = discord.Embed(title='📋 Slot Request', color=discord.Color.yellow())
-        embed.add_field(name='Member', value=interaction.user.mention, inline=True)
-        embed.add_field(name='Requested Slot', value=f"**{slot['label']}**", inline=True)
-        embed.add_field(name='Operation', value=op['name'] if op else 'Unknown', inline=False)
-        if unit_role:
-            embed.add_field(name='Unit', value=unit_role, inline=True)
-        embed.set_footer(text=f"Request ID: {request_id}")
-        embed.timestamp = discord.utils.utcnow()
-
-        approval_view = ApprovalView(request_id=request_id, bot=self.bot)
-        msg = await approval_channel.send(embed=embed, view=approval_view)
-        self.bot.add_view(approval_view)  # keep it alive across restarts
-
-        await database.update_request_message(
-            request_id, str(msg.id), str(approval_channel.id)
-        )
-
-        # DM the requesting member
-        try:
-            await interaction.user.send(
-                f"✅ **Slot Request Submitted**\n"
-                f"Operation: **{op['name'] if op else 'Unknown'}**\n"
-                f"Slot: **{slot['label']}**\n"
-                f"Status: ⏳ Pending — an admin will review your request soon."
-            )
-        except discord.Forbidden:
-            pass
+        await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +421,11 @@ class DenialModal(discord.ui.Modal, title='Deny Slot Request'):
             pass
 
         await interaction.response.send_message("❌ Request denied.", ephemeral=True)
+
+        # Refresh the live ORBAT board (fire-and-forget)
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if op:
+            asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
 
         # DM the member
         try:
@@ -443,10 +507,8 @@ class ApprovalView(discord.ui.View):
                     sheets.assign_slot,
                     op['sheet_id'],
                     req['sheet_row'],
-                    req['member_name'],
-                    op['assigned_col'],
-                    op['status_col'],
                     req['sheet_col'],
+                    req['member_name'],
                     req['unit_role'],
                 )
             except Exception as e:
@@ -468,7 +530,7 @@ class ApprovalView(discord.ui.View):
             "✅ Request approved and sheet updated!", ephemeral=True
         )
 
-        # DM the member
+        # DM the approved member
         try:
             member = await interaction.guild.fetch_member(int(req['member_id']))
             await member.send(
@@ -479,6 +541,46 @@ class ApprovalView(discord.ui.View):
             )
         except (discord.Forbidden, discord.NotFound):
             pass
+
+        # Auto-deny any competing requests for the same slot
+        if op:
+            competitors = await database.get_competing_requests(
+                op['id'], req['sheet_row'], self.request_id
+            )
+            for comp in competitors:
+                await database.deny_request(
+                    comp['id'],
+                    interaction.user.display_name,
+                    reason='Slot was awarded to another member',
+                )
+                # Update their approval message
+                if comp['approval_channel_id'] and comp['approval_message_id']:
+                    try:
+                        ch = interaction.guild.get_channel(int(comp['approval_channel_id']))
+                        if ch:
+                            msg = await ch.fetch_message(int(comp['approval_message_id']))
+                            comp_embed = msg.embeds[0].copy() if msg.embeds else discord.Embed()
+                            comp_embed.color = discord.Color.dark_gray()
+                            comp_embed.add_field(
+                                name='❌ Denied',
+                                value=f"Slot awarded to **{req['member_name']}**",
+                                inline=False,
+                            )
+                            await msg.edit(embed=comp_embed, view=None)
+                    except (discord.NotFound, discord.Forbidden):
+                        pass
+                # DM the competing member
+                try:
+                    comp_member = await interaction.guild.fetch_member(int(comp['member_id']))
+                    await comp_member.send(
+                        f"❌ **Slot Request Denied**\n"
+                        f"Operation: **{op['name']}**\n"
+                        f"Slot: **{comp['slot_label']}**\n"
+                        f"This slot was awarded to another member. "
+                        f"You can request a different slot with `/request-slot`."
+                    )
+                except (discord.Forbidden, discord.NotFound):
+                    pass
 
         # Refresh the live ORBAT board (fire-and-forget)
         if op:
@@ -516,6 +618,104 @@ class ApprovalView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
+# Live ORBAT view — slot select menus + fallback button, rebuilt on each update
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Persistent "Request a Slot" button attached to the ORBAT embed
+# ---------------------------------------------------------------------------
+
+class OrbatRequestButton(discord.ui.View):
+    """Persistent view with a single button attached to the live ORBAT embed."""
+
+    def __init__(self, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    @discord.ui.button(
+        label='📋 Request a Slot',
+        style=discord.ButtonStyle.primary,
+        custom_id='orbat_request_slot',
+    )
+    async def request_slot_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            op = await database.get_active_operation(str(interaction.guild_id))
+            if not op:
+                await interaction.followup.send(
+                    "❌ No active operation.", ephemeral=True
+                )
+                return
+
+            existing = await database.get_member_active_request(
+                str(interaction.guild_id), op['id'], str(interaction.user.id)
+            )
+            if existing:
+                await interaction.followup.send(
+                    f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+                    "You can only hold one slot per operation.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                loop = asyncio.get_event_loop()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "❌ Timed out loading the sheet. Try again in a moment.",
+                    ephemeral=True,
+                )
+                return
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Failed to load slots: `{e}`", ephemeral=True
+                )
+                return
+
+            pending_rows = set(await database.get_pending_slots(op['id']))
+            approved_rows = set(await database.get_approved_slots(op['id']))
+            available = [s for s in data['slots'] if s['row'] not in approved_rows]
+
+            if not available:
+                await interaction.followup.send(
+                    "❌ All slots are filled for this operation.", ephemeral=True
+                )
+                return
+
+            open_count = sum(1 for s in available if s['row'] not in pending_rows)
+            pending_count = sum(1 for s in available if s['row'] in pending_rows)
+
+            embed = discord.Embed(
+                title=f"🎖️ {data['operation_name']} — Slot Request",
+                description=(
+                    f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
+                    "Select your slot from the menu(s) below.\n"
+                    "Pending slots are reserved until approved or denied."
+                ),
+                color=discord.Color.blurple(),
+            )
+            view = SlotRequestView(
+                slots=available,
+                operation_id=op['id'],
+                pending_rows=pending_rows,
+                approved_rows=approved_rows,
+                bot=self.bot,
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        except Exception as e:
+            try:
+                await interaction.followup.send(f"❌ Unexpected error: `{e}`", ephemeral=True)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Cog
 # ---------------------------------------------------------------------------
 
@@ -530,66 +730,340 @@ class SlotsCog(commands.Cog):
     async def request_slot(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
+        try:
+            op = await database.get_active_operation(str(interaction.guild_id))
+            if not op:
+                await interaction.followup.send(
+                    "❌ No active operation. An admin needs to run `/setup-slots` first.",
+                    ephemeral=True,
+                )
+                return
+
+            existing = await database.get_member_active_request(
+                str(interaction.guild_id), op['id'], str(interaction.user.id)
+            )
+            if existing:
+                await interaction.followup.send(
+                    f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
+                    "You can only hold one slot per operation.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                loop = asyncio.get_event_loop()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "❌ Timed out loading the sheet (>30 s). Check that the sheet is shared with the service account and try again.",
+                    ephemeral=True,
+                )
+                return
+            except Exception as e:
+                await interaction.followup.send(
+                    f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
+                )
+                return
+
+            pending_rows = set(await database.get_pending_slots(op['id']))
+            approved_rows = set(await database.get_approved_slots(op['id']))
+
+            available = [s for s in data['slots'] if s['row'] not in approved_rows]
+            if not available:
+                await interaction.followup.send(
+                    "❌ All slots are filled for this operation.", ephemeral=True
+                )
+                return
+
+            open_count = sum(1 for s in available if s['row'] not in pending_rows)
+            pending_count = sum(1 for s in available if s['row'] in pending_rows)
+
+            embed = discord.Embed(
+                title=f"🎖️ {data['operation_name']} — Slot Request",
+                description=(
+                    f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
+                    "Select your slot from the menu(s) below.\n"
+                    "Pending slots are reserved until approved or denied."
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            view = SlotRequestView(
+                slots=available,
+                operation_id=op['id'],
+                pending_rows=pending_rows,
+                approved_rows=approved_rows,
+                bot=self.bot,
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+        except Exception as e:
+            # Catch-all so the user always gets a response instead of "thinking…" forever
+            try:
+                await interaction.followup.send(
+                    f"❌ Unexpected error: `{e}`", ephemeral=True
+                )
+            except Exception:
+                pass
+
+
+    @app_commands.command(
+        name='cancel-request',
+        description='Cancel your pending slot request for the current operation',
+    )
+    async def cancel_request(self, interaction: discord.Interaction):
         op = await database.get_active_operation(str(interaction.guild_id))
         if not op:
-            await interaction.followup.send(
-                "❌ No active operation. An admin needs to run `/setup-slots` first.",
-                ephemeral=True,
+            await interaction.response.send_message(
+                "❌ No active operation.", ephemeral=True
             )
             return
 
         existing = await database.get_member_active_request(
             str(interaction.guild_id), op['id'], str(interaction.user.id)
         )
-        if existing:
+        if not existing or existing['status'] != 'pending':
+            await interaction.response.send_message(
+                "⚠️ You don't have a pending request to cancel.", ephemeral=True
+            )
+            return
+
+        cancelled = await database.cancel_member_request(
+            str(interaction.guild_id), op['id'], str(interaction.user.id)
+        )
+        if cancelled:
+            await interaction.response.send_message(
+                f"✅ Your request for **{existing['slot_label']}** has been cancelled.\n"
+                "You can request a different slot with `/request-slot`.",
+                ephemeral=True,
+            )
+            asyncio.create_task(_void_approval_message(self.bot, interaction.guild, existing))
+            asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
+        else:
+            await interaction.response.send_message(
+                "❌ Could not cancel your request.", ephemeral=True
+            )
+
+
+    @app_commands.command(
+        name='change-slot',
+        description='Request a different slot, forfeiting your current one',
+    )
+    async def change_slot(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.followup.send("❌ No active operation.", ephemeral=True)
+            return
+
+        existing = await database.get_member_active_request(
+            str(interaction.guild_id), op['id'], str(interaction.user.id)
+        )
+        if not existing:
             await interaction.followup.send(
-                f"⚠️ You already have a **{existing['status']}** request for **{existing['slot_label']}**.\n"
-                "You can only hold one slot per operation.",
+                "ℹ️ You don't have an active slot. Use `/request-slot` to sign up.",
                 ephemeral=True,
             )
             return
 
-        try:
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
-            )
-            return
-
-        pending_rows = set(await database.get_pending_slots(op['id']))
-        approved_rows = set(await database.get_approved_slots(op['id']))
-
-        available = [s for s in data['slots'] if s['row'] not in approved_rows]
-        if not available:
-            await interaction.followup.send(
-                "❌ All slots are filled for this operation.", ephemeral=True
-            )
-            return
-
-        open_count = sum(1 for s in available if s['row'] not in pending_rows)
-        pending_count = sum(1 for s in available if s['row'] in pending_rows)
-
+        # Build confirmation view
         embed = discord.Embed(
-            title=f"🎖️ {data['operation_name']} — Slot Request",
+            title='⚠️ Change Slot — Confirmation',
             description=(
-                f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
-                "Select your slot from the menu(s) below.\n"
-                "Pending slots are reserved until approved or denied."
+                f"You currently hold **{existing['slot_label']}** "
+                f"({existing['status']}).\n\n"
+                "Continuing will **forfeit this slot** and let you pick a new one.\n"
+                "Are you sure?"
             ),
-            color=discord.Color.blurple(),
+            color=discord.Color.orange(),
         )
 
-        view = SlotRequestView(
-            slots=available,
-            operation_id=op['id'],
-            pending_rows=pending_rows,
-            approved_rows=approved_rows,
-            bot=self.bot,
-        )
+        bot_ref = self.bot
+
+        class ConfirmView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=60)
+                self.confirmed = False
+
+            @discord.ui.button(label='Yes, forfeit my slot', style=discord.ButtonStyle.danger, emoji='⚠️')
+            async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.confirmed = True
+                self.stop()
+
+                # Cancel the old request
+                if existing['status'] == 'approved':
+                    # Clear the sheet cell too
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            sheets.clear_slot,
+                            op['sheet_id'],
+                            existing['sheet_row'],
+                            existing['sheet_col'],
+                            existing['member_name'],
+                        )
+                    except Exception as e:
+                        await btn_interaction.response.send_message(
+                            f"⚠️ Could not clear the slot from the sheet: `{e}`\n"
+                            "Please ask an admin to clear it manually, then retry.",
+                            ephemeral=True,
+                        )
+                        return
+                    await database.cancel_request_by_id(existing['id'])
+                else:
+                    await database.cancel_member_request(
+                        str(btn_interaction.guild_id), op['id'], str(btn_interaction.user.id)
+                    )
+                    asyncio.create_task(_void_approval_message(bot_ref, btn_interaction.guild, existing))
+
+                # Now load available slots and show the picker
+                try:
+                    loop = asyncio.get_event_loop()
+                    data = await asyncio.wait_for(
+                        loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    await btn_interaction.response.send_message(
+                        "❌ Timed out loading the sheet. Please try `/request-slot` in a moment.",
+                        ephemeral=True,
+                    )
+                    return
+                except Exception as e:
+                    await btn_interaction.response.send_message(
+                        f"❌ Failed to load slots: `{e}`", ephemeral=True
+                    )
+                    return
+
+                pending_rows = set(await database.get_pending_slots(op['id']))
+                approved_rows = set(await database.get_approved_slots(op['id']))
+                available = [s for s in data['slots'] if s['row'] not in approved_rows]
+
+                if not available:
+                    await btn_interaction.response.send_message(
+                        "❌ No slots are available right now.", ephemeral=True
+                    )
+                    asyncio.create_task(_update_orbat(bot_ref, btn_interaction.guild, op))
+                    return
+
+                open_count = sum(1 for s in available if s['row'] not in pending_rows)
+                pending_count = sum(1 for s in available if s['row'] in pending_rows)
+
+                picker_embed = discord.Embed(
+                    title=f"🎖️ {data['operation_name']} — Pick a New Slot",
+                    description=(
+                        f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
+                        "Select your new slot below."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                picker_view = SlotRequestView(
+                    slots=available,
+                    operation_id=op['id'],
+                    pending_rows=pending_rows,
+                    approved_rows=approved_rows,
+                    bot=bot_ref,
+                )
+                await btn_interaction.response.send_message(
+                    embed=picker_embed, view=picker_view, ephemeral=True
+                )
+                asyncio.create_task(_update_orbat(bot_ref, btn_interaction.guild, op))
+
+            @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
+            async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+                await btn_interaction.response.send_message(
+                    "No changes made.", ephemeral=True
+                )
+
+        view = ConfirmView()
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
+    @app_commands.command(
+        name='leave-operation',
+        description='Remove yourself from the current operation entirely',
+    )
+    async def leave_operation(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        op = await database.get_active_operation(str(interaction.guild_id))
+        if not op:
+            await interaction.followup.send("❌ No active operation.", ephemeral=True)
+            return
+
+        existing = await database.get_member_active_request(
+            str(interaction.guild_id), op['id'], str(interaction.user.id)
+        )
+        if not existing:
+            await interaction.followup.send(
+                "ℹ️ You don't have an active slot in this operation.", ephemeral=True
+            )
+            return
+
+        status_label = existing['status'].capitalize()
+        embed = discord.Embed(
+            title='⚠️ Leave Operation — Confirmation',
+            description=(
+                f"You currently hold **{existing['slot_label']}** ({status_label}).\n\n"
+                "This will **remove you from the operation** and free up your slot.\n"
+                "Are you sure?"
+            ),
+            color=discord.Color.orange(),
+        )
+
+        bot_ref = self.bot
+
+        class ConfirmLeaveView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=60)
+
+            @discord.ui.button(label='Yes, leave operation', style=discord.ButtonStyle.danger, emoji='🚪')
+            async def confirm(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+
+                if existing['status'] == 'approved':
+                    try:
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            sheets.clear_slot,
+                            op['sheet_id'],
+                            existing['sheet_row'],
+                            existing['sheet_col'],
+                            existing['member_name'],
+                        )
+                    except Exception as e:
+                        await btn_interaction.response.send_message(
+                            f"⚠️ Could not clear the slot from the sheet: `{e}`\n"
+                            "Please ask an admin to clear it manually.",
+                            ephemeral=True,
+                        )
+                        return
+                    await database.cancel_request_by_id(existing['id'])
+                else:
+                    await database.cancel_member_request(
+                        str(btn_interaction.guild_id), op['id'], str(btn_interaction.user.id)
+                    )
+                    asyncio.create_task(_void_approval_message(bot_ref, btn_interaction.guild, existing))
+
+                await btn_interaction.response.send_message(
+                    f"✅ You've been removed from **{existing['slot_label']}**.\n"
+                    "You can sign up again with `/request-slot` if you change your mind.",
+                    ephemeral=True,
+                )
+                asyncio.create_task(_update_orbat(bot_ref, btn_interaction.guild, op))
+
+            @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
+            async def cancel(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+                self.stop()
+                await btn_interaction.response.send_message("No changes made.", ephemeral=True)
+
+        await interaction.followup.send(embed=embed, view=ConfirmLeaveView(), ephemeral=True)
 
     @app_commands.command(
         name='post-orbat',
@@ -621,9 +1095,9 @@ class SlotsCog(commands.Cog):
             return
 
         pending_rows = set(await database.get_pending_slots(op['id']))
-        embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows)
+        embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
 
-        msg = await target.send(embed=embed)
+        msg = await target.send(embed=embed, view=OrbatRequestButton(self.bot))
         await database.save_orbat_message(
             str(interaction.guild_id), str(target.id), str(msg.id)
         )
@@ -632,7 +1106,6 @@ class SlotsCog(commands.Cog):
             f"✅ ORBAT posted to {target.mention}. It will update automatically when slots are approved.",
             ephemeral=True,
         )
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SlotsCog(bot))
