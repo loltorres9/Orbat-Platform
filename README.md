@@ -87,6 +87,8 @@ The bot also supports **ORBAT-style sheets** where slots appear as cell values (
    - Bot permissions: `Send Messages`, `Embed Links`, `Read Message History`, `Manage Channels`, `Use Slash Commands`
 4. Paste the generated URL in your browser and invite the bot to your server
 
+> **Important — command visibility:** After the bot joins, go to **Server Settings → Integrations → ORBATBot → Manage**. Make sure `@everyone` is set to ✅ (allow). If it is set to ❌, all commands will be hidden from regular members regardless of what the bot configures. Admin-only commands are restricted automatically by the bot — you do not need to configure those manually.
+
 ### 2. Google Sheets API
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com) → **New Project**
