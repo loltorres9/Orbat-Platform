@@ -9,6 +9,14 @@ from discord.ext import commands
 from utils import database, sheets
 from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat, OrbatRequestButton
 
+UNIT_LEADER_ROLE = 'Unit Leader'
+
+
+def _is_unit_leader_or_admin(member: discord.Member) -> bool:
+    if member.guild_permissions.manage_guild or member.guild_permissions.administrator:
+        return True
+    return any(r.name == UNIT_LEADER_ROLE for r in member.roles)
+
 _EVENT_TIME_FORMATS = ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M', '%d-%m-%Y %H:%M']
 
 # Common timezone choices (max 25 for Discord)
@@ -183,11 +191,17 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='clear-slot',
-        description='Remove a member from an approved slot (Admin only)',
+        description='Remove a member from an approved slot (Admin or Unit Leader)',
     )
-    @app_commands.default_permissions(manage_guild=True)
     async def clear_slot(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+
+        if not _is_unit_leader_or_admin(interaction.user):
+            await interaction.followup.send(
+                "🚫 You need the **Unit Leader** role or admin permissions to use this command.",
+                ephemeral=True,
+            )
+            return
 
         op = await database.get_active_operation(str(interaction.guild_id))
         if not op:
@@ -195,6 +209,19 @@ class AdminCog(commands.Cog):
             return
 
         approved = await database.get_approved_requests(op['id'])
+
+        # Unit Leaders can only clear slots belonging to their own unit
+        is_admin = interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator
+        if not is_admin:
+            leader_unit = _get_unit_role(interaction.user)
+            if not leader_unit:
+                await interaction.followup.send(
+                    "🚫 You need a unit role (e.g. 2nd USC) alongside **Unit Leader** to use this command.",
+                    ephemeral=True,
+                )
+                return
+            approved = [r for r in approved if r['unit_role'] == leader_unit]
+
         if not approved:
             await interaction.followup.send(
                 "ℹ️ No approved slots to clear.", ephemeral=True
@@ -276,8 +303,9 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='current-operation',
-        description='Show which operation is currently active',
+        description='Show which operation is currently active (Admin only)',
     )
+    @app_commands.default_permissions(manage_guild=True)
     async def current_operation(self, interaction: discord.Interaction):
         op = await database.get_active_operation(str(interaction.guild_id))
         if not op:
@@ -376,12 +404,37 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='assign-slot',
-        description='Directly assign a member to a slot without going through approval (Admin only)',
+        description='Directly assign a member to a slot without approval (Admin or Unit Leader)',
     )
     @app_commands.describe(member='The Discord member to assign')
-    @app_commands.default_permissions(manage_guild=True)
     async def assign_slot(self, interaction: discord.Interaction, member: discord.Member):
         await interaction.response.defer(ephemeral=True)
+
+        if not _is_unit_leader_or_admin(interaction.user):
+            await interaction.followup.send(
+                "🚫 You need the **Unit Leader** role or admin permissions to use this command.",
+                ephemeral=True,
+            )
+            return
+
+        # Unit Leaders can only assign members of their own unit
+        is_admin = interaction.user.guild_permissions.manage_guild or interaction.user.guild_permissions.administrator
+        if not is_admin:
+            leader_unit = _get_unit_role(interaction.user)
+            if not leader_unit:
+                await interaction.followup.send(
+                    "🚫 You need a unit role (e.g. 2nd USC) alongside **Unit Leader** to use this command.",
+                    ephemeral=True,
+                )
+                return
+            member_unit = _get_unit_role(member)
+            if member_unit != leader_unit:
+                await interaction.followup.send(
+                    f"🚫 You can only assign members from your own unit (**{leader_unit}**).\n"
+                    f"**{member.display_name}** belongs to **{member_unit or 'no unit'}**.",
+                    ephemeral=True,
+                )
+                return
 
         op = await database.get_active_operation(str(interaction.guild_id))
         if not op:
@@ -501,14 +554,22 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='sync',
-        description='Force-sync slash commands with Discord (Admin only)',
+        description='Force-sync slash commands with Discord and refresh ORBAT (Admin only)',
     )
     @app_commands.default_permissions(manage_guild=True)
     async def sync(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         synced = await self.bot.tree.sync(guild=interaction.guild)
+
+        # Refresh ORBAT from sheet
+        op = await database.get_active_operation(str(interaction.guild_id))
+        orbat_note = ""
+        if op:
+            asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
+            orbat_note = "\n📋 ORBAT refreshed from sheet."
+
         await interaction.followup.send(
-            f"✅ Synced **{len(synced)}** command(s) to this server.",
+            f"✅ Synced **{len(synced)}** command(s) to this server.{orbat_note}",
             ephemeral=True,
         )
 
