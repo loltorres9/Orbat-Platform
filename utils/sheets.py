@@ -133,11 +133,14 @@ def load_slots(sheet_url: str) -> dict:
                 assign_col = None
                 for search_col in range(col_idx, min(col_idx + 5, num_cols)):
                     search_cell = row[search_col].strip() if search_col < len(row) else ''
+                    # Must check slot-entry BEFORE available: a single-cell slot like
+                    # "3. Medic - [] <Insert Name>" passes both tests. If we're scanning
+                    # past the original column we must stop rather than steal that cell.
+                    if search_col > col_idx and _is_slot_entry(search_cell):
+                        break  # crossed into another slot — stop
                     if _is_available(search_cell):
                         assign_col = search_col
                         break
-                    if search_col > col_idx and _is_slot_entry(search_cell):
-                        break  # crossed into another slot — stop
 
                 if assign_col is not None:
                     role = _extract_role(cell)
