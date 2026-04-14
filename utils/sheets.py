@@ -67,16 +67,23 @@ def _is_squad_header(cell: str) -> bool:
         return False
     if _RADIO_FREQ.search(cell):
         return False
-    if not re.search(r'[a-zA-Z]', cell):
+    # Skip short labels like column headers ("Net", etc.)
+    if len(cell) < 3:
         return False
-    # Skip short labels like column headers ("Slots:", "Net", etc.)
-    if len(cell) < 4:
+    # Skip column headings that end with a colon ("Slots:", "Radio frequencies:")
+    if cell.endswith(':'):
         return False
     # Skip announcement sentences — squad headers don't end with punctuation
     if cell.endswith('.') or cell.endswith('!') or cell.endswith('?'):
         return False
     # Assignment marker cells (e.g. "[] <Insert Name>") are not squad headers
     if _is_available(cell):
+        return False
+    # Allow squad identifier patterns like "1-0 ()", "2-1" even without letters
+    if re.match(r'^\d+-\d+', cell):
+        return True
+    # Require at least one letter for everything else
+    if not re.search(r'[a-zA-Z]', cell):
         return False
     return True
 
@@ -156,7 +163,8 @@ def load_slots(sheet_url: str) -> dict:
                         'value': value,
                     })
             elif _is_squad_header(cell):
-                squad_per_col[col_idx] = cell
+                # Strip empty unit tag e.g. "1-0 ()" → "1-0"
+                squad_per_col[col_idx] = re.sub(r'\s*\(\s*\)\s*$', '', cell).strip() or cell
 
     if not slots:
         raise ValueError(
@@ -255,11 +263,13 @@ def load_all_slots(sheet_url: str) -> dict:
                     'squad': squad,
                     'role': role,
                     'row': sheet_row,
+                    'col': assign_sheet_col,
                     'assigned_to': assigned_to,
                     'col_idx': col_idx,
                 })
             elif _is_squad_header(cell):
-                squad_per_col[col_idx] = cell
+                # Strip empty unit tag e.g. "1-0 ()" → "1-0"
+                squad_per_col[col_idx] = re.sub(r'\s*\(\s*\)\s*$', '', cell).strip() or cell
 
     return {
         'operation_name': operation_name,

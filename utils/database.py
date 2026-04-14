@@ -119,20 +119,20 @@ async def get_pending_slots(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
         rows = await db.fetch(
-            "SELECT sheet_row FROM requests WHERE operation_id = $1 AND status = 'pending'",
+            "SELECT sheet_row, sheet_col FROM requests WHERE operation_id = $1 AND status = 'pending'",
             operation_id,
         )
-        return [row['sheet_row'] for row in rows]
+        return [(row['sheet_row'], row['sheet_col']) for row in rows]
 
 
 async def get_approved_slots(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
         rows = await db.fetch(
-            "SELECT sheet_row FROM requests WHERE operation_id = $1 AND status = 'approved'",
+            "SELECT sheet_row, sheet_col FROM requests WHERE operation_id = $1 AND status = 'approved'",
             operation_id,
         )
-        return [row['sheet_row'] for row in rows]
+        return [(row['sheet_row'], row['sheet_col']) for row in rows]
 
 
 async def get_member_active_request(guild_id: str, operation_id: int, member_id: str):
@@ -349,15 +349,15 @@ async def mark_reminder_fired(operation_id: int):
         )
 
 
-async def get_competing_requests(operation_id: int, sheet_row: int, exclude_request_id: int) -> list:
-    """Return all other pending requests for the same slot row."""
+async def get_competing_requests(operation_id: int, sheet_row: int, sheet_col: int, exclude_request_id: int) -> list:
+    """Return all other pending requests for the same slot cell (row + col)."""
     pool = await get_pool()
     async with pool.acquire() as db:
         return await db.fetch(
             """SELECT * FROM requests
-               WHERE operation_id = $1 AND sheet_row = $2
-               AND id != $3 AND status = 'pending'""",
-            operation_id, sheet_row, exclude_request_id,
+               WHERE operation_id = $1 AND sheet_row = $2 AND sheet_col = $3
+               AND id != $4 AND status = 'pending'""",
+            operation_id, sheet_row, sheet_col, exclude_request_id,
         )
 
 
