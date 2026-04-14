@@ -120,12 +120,11 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op, raise_error
             raise RuntimeError(f"Cannot access ORBAT channel: {e}") from e
         return
 
+    msg = None
     try:
         msg = await channel.fetch_message(int(stored['message_id']))
-    except (discord.NotFound, discord.Forbidden) as e:
-        if raise_errors:
-            raise RuntimeError(f"ORBAT message not found — try `/post-orbat` to re-post it: {e}") from e
-        return
+    except (discord.NotFound, discord.Forbidden):
+        pass  # message gone — we'll re-post below
 
     try:
         loop = asyncio.get_event_loop()
@@ -141,11 +140,21 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op, raise_error
     pending_rows = set(await database.get_pending_slots(op['id']))
     embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
 
-    try:
-        await msg.edit(embed=embed, view=OrbatRequestButton(bot))
-    except (discord.NotFound, discord.Forbidden) as e:
-        if raise_errors:
-            raise RuntimeError(f"Failed to edit ORBAT message: {e}") from e
+    if msg is None:
+        # Original message gone — re-post and save new ID
+        try:
+            new_msg = await channel.send(embed=embed, view=OrbatRequestButton(bot))
+            bot.add_view(OrbatRequestButton(bot))
+            await database.save_orbat_message(str(guild.id), str(channel.id), str(new_msg.id))
+        except (discord.NotFound, discord.Forbidden) as e:
+            if raise_errors:
+                raise RuntimeError(f"Failed to re-post ORBAT: {e}") from e
+    else:
+        try:
+            await msg.edit(embed=embed, view=OrbatRequestButton(bot))
+        except (discord.NotFound, discord.Forbidden) as e:
+            if raise_errors:
+                raise RuntimeError(f"Failed to edit ORBAT message: {e}") from e
 
 
 def _can_action_request(approver: discord.Member, unit_role: Optional[str]) -> bool:
