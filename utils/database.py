@@ -213,6 +213,16 @@ async def get_approved_requests(operation_id: int) -> list:
         )
 
 
+async def get_active_requests(operation_id: int) -> list:
+    """Return all pending and approved requests for an operation."""
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            "SELECT * FROM requests WHERE operation_id = $1 AND status IN ('pending', 'approved') ORDER BY status DESC, created_at",
+            operation_id,
+        )
+
+
 async def cancel_request_by_id(request_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as db:
