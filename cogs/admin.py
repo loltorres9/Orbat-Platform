@@ -646,7 +646,7 @@ class AdminCog(commands.Cog):
 
             # Refresh ORBAT directly (awaited so errors surface)
             try:
-                await _update_orbat(self.bot, interaction.guild, op)
+                await _update_orbat(self.bot, interaction.guild, op, raise_errors=True)
                 orbat_note = "\n📋 ORBAT refreshed."
             except Exception as e:
                 orbat_note = f"\n⚠️ ORBAT refresh failed: `{e}`"

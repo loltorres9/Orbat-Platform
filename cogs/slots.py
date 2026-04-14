@@ -100,33 +100,52 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, 
     return embed
 
 
-async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
-    """Silently refresh the live ORBAT message for this guild, if one exists."""
+async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op, raise_errors: bool = False):
+    """Refresh the live ORBAT message for this guild.
+
+    By default errors are suppressed (fire-and-forget background use).
+    Pass raise_errors=True to let exceptions propagate (e.g. from /sync).
+    """
     stored = await database.get_orbat_message(str(guild.id))
     if not stored:
         return
+
     try:
-        channel = guild.get_channel(int(stored['channel_id'])) or await guild.fetch_channel(int(stored['channel_id']))
-    except (discord.NotFound, discord.Forbidden):
+        channel = (
+            guild.get_channel(int(stored['channel_id']))
+            or await guild.fetch_channel(int(stored['channel_id']))
+        )
+    except (discord.NotFound, discord.Forbidden) as e:
+        if raise_errors:
+            raise RuntimeError(f"Cannot access ORBAT channel: {e}") from e
         return
+
     try:
         msg = await channel.fetch_message(int(stored['message_id']))
-    except (discord.NotFound, discord.Forbidden):
+    except (discord.NotFound, discord.Forbidden) as e:
+        if raise_errors:
+            raise RuntimeError(f"ORBAT message not found — try `/post-orbat` to re-post it: {e}") from e
         return
+
     try:
         loop = asyncio.get_event_loop()
         data = await asyncio.wait_for(
             loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url']),
             timeout=30,
         )
-    except Exception:
+    except Exception as e:
+        if raise_errors:
+            raise RuntimeError(f"Failed to load sheet: {e}") from e
         return
+
     pending_rows = set(await database.get_pending_slots(op['id']))
     embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
+
     try:
         await msg.edit(embed=embed, view=OrbatRequestButton(bot))
-    except (discord.NotFound, discord.Forbidden):
-        pass
+    except (discord.NotFound, discord.Forbidden) as e:
+        if raise_errors:
+            raise RuntimeError(f"Failed to edit ORBAT message: {e}") from e
 
 
 def _can_action_request(approver: discord.Member, unit_role: Optional[str]) -> bool:
