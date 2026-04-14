@@ -161,6 +161,15 @@ async def create_request(guild_id: str, operation_id: int, member_id: str,
         return row['id']
 
 
+async def update_request_sheet_col(request_id: int, sheet_row: int, sheet_col: int):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            'UPDATE requests SET sheet_row = $1, sheet_col = $2 WHERE id = $3',
+            sheet_row, sheet_col, request_id,
+        )
+
+
 async def update_request_message(request_id: int, message_id: str, channel_id: str):
     pool = await get_pool()
     async with pool.acquire() as db:

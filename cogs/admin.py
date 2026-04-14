@@ -615,12 +615,36 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         synced = await self.bot.tree.sync(guild=interaction.guild)
 
-        # Refresh ORBAT from sheet
+        # Refresh ORBAT from sheet and repair any pending requests with stale sheet_col
         op = await database.get_active_operation(str(interaction.guild_id))
         orbat_note = ""
+        repaired = 0
         if op:
+            try:
+                loop = asyncio.get_event_loop()
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                    timeout=30,
+                )
+                # Build label → (row, col) map from the freshly parsed sheet
+                label_to_slot = {s['label']: s for s in data['slots']}
+                pending = await database.get_active_requests(op['id'])
+                for req in pending:
+                    correct = label_to_slot.get(req['slot_label'])
+                    if correct and (
+                        req['sheet_row'] != correct['row']
+                        or req['sheet_col'] != correct.get('col')
+                    ):
+                        await database.update_request_sheet_col(
+                            req['id'], correct['row'], correct['col']
+                        )
+                        repaired += 1
+            except Exception:
+                pass
             asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
-            orbat_note = "\n📋 ORBAT refreshed from sheet."
+            orbat_note = "\n📋 ORBAT refreshed."
+            if repaired:
+                orbat_note += f" Repaired **{repaired}** pending request(s) with stale slot position."
 
         await interaction.followup.send(
             f"✅ Synced **{len(synced)}** command(s) to this server.{orbat_note}",
