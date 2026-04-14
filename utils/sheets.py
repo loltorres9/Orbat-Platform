@@ -291,16 +291,17 @@ def clear_slot(sheet_id: str, row: int, col: int, member_name: str):
     worksheet = spreadsheet.sheet1
 
     current = worksheet.cell(row, col).value or ''
-    # Replace "[] MemberName" → "[] <Insert Name>"
+    # Replace "[UnitTag] MemberName" or "[] MemberName" → "[] <Insert Name>"
     new_value = re.sub(
-        r'(\[\]\s*)' + re.escape(member_name),
-        r'\g<1><Insert Name>',
+        r'\[.*?\]\s*' + re.escape(member_name),
+        '[] <Insert Name>',
         current,
         flags=re.IGNORECASE,
     )
     if new_value == current:
-        # Fallback: replace the name anywhere in the cell
+        # Fallback: replace the name anywhere in the cell, then strip any leftover tag
         new_value = re.sub(re.escape(member_name), '<Insert Name>', current, flags=re.IGNORECASE)
+        new_value = re.sub(r'\[.*?\](\s*<Insert Name>)', r'[]\1', new_value, flags=re.IGNORECASE)
     if new_value == current:
         # Last resort: reset the cell entirely
         new_value = '[] <Insert Name>'

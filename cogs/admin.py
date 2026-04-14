@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils import database, sheets
-from cogs.slots import _build_orbat_embed, _build_select_menus, _get_unit_role, _update_orbat, OrbatRequestButton
+from cogs.slots import _build_orbat_embed, _get_unit_role, _update_orbat, OrbatRequestButton, SquadSelectView
 
 UNIT_LEADER_ROLE = 'Unit Leader'
 
@@ -455,36 +455,38 @@ class AdminCog(commands.Cog):
 
         try:
             loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_slots, op['sheet_url'])
+            data = await asyncio.wait_for(
+                loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                "❌ Timed out loading the sheet (30s). Make sure it's shared with the service account.",
+                ephemeral=True,
+            )
+            return
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to load slots: `{e}`", ephemeral=True)
             return
 
-        if not data['slots']:
-            await interaction.followup.send("ℹ️ No available slots found.", ephemeral=True)
-            return
-
         pending_rows = set(await database.get_pending_slots(op['id']))
         approved_rows = set(await database.get_approved_slots(op['id']))
-        menus = _build_select_menus(data['slots'], pending_rows, approved_rows)
+        available = [s for s in data['slots'] if (s['row'], s.get('col')) not in approved_rows]
 
-        if not menus:
-            await interaction.followup.send("ℹ️ All slots are currently filled or pending.", ephemeral=True)
+        if not available:
+            await interaction.followup.send("ℹ️ All slots are currently filled.", ephemeral=True)
             return
 
-        slots_by_value = {s['value']: s for s in data['slots']}
+        squads: dict = {}
+        for s in available:
+            squads.setdefault(s['squad'], []).append(s)
+
         bot_ref = self.bot
 
-        async def _select_callback(sel_interaction: discord.Interaction):
-            selected_value = sel_interaction.data['values'][0]
-            slot = slots_by_value.get(selected_value)
-            if not slot:
-                await sel_interaction.response.send_message("❌ Slot not found.", ephemeral=True)
-                return
-
+        async def _on_slot_selected(sel_interaction: discord.Interaction, slot: dict):
             # Re-check at selection time
             current_approved = set(await database.get_approved_slots(op['id']))
-            if slot['row'] in current_approved:
+            if (slot['row'], slot.get('col')) in current_approved:
                 await sel_interaction.response.send_message(
                     "❌ That slot was just filled. Please pick another.", ephemeral=True
                 )
@@ -529,7 +531,6 @@ class AdminCog(commands.Cog):
                 ephemeral=True,
             )
 
-            # DM the member
             try:
                 await member.send(
                     f"✅ **Slot Assigned**\n"
@@ -541,11 +542,15 @@ class AdminCog(commands.Cog):
 
             asyncio.create_task(_update_orbat(bot_ref, sel_interaction.guild, op))
 
-        view = discord.ui.View(timeout=120)
-        for menu in menus:
-            menu.callback = _select_callback
-            view.add_item(menu)
-
+        view = SquadSelectView(
+            squads=squads,
+            all_slots=available,
+            operation_id=op['id'],
+            pending_rows=pending_rows,
+            approved_rows=approved_rows,
+            bot=self.bot,
+            on_select=_on_slot_selected,
+        )
         await interaction.followup.send(
             f"Select a slot to assign to **{member.display_name}**:",
             view=view,

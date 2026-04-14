@@ -150,68 +150,6 @@ def _can_action_request(approver: discord.Member, unit_role: Optional[str]) -> b
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_select_menus(
-    slots: list,
-    pending_rows: set,
-    approved_rows: set,
-) -> list[discord.ui.Select]:
-    """
-    Split slots into Discord Select Menus (max 25 options each, max 5 menus).
-
-    Slots are grouped by squad name where possible. If there are more than 5
-    squads the slots are chunked numerically instead.
-    """
-    # Group by squad, preserving insertion order
-    squads: dict[str, list] = {}
-    for slot in slots:
-        squads.setdefault(slot['squad'], []).append(slot)
-
-    if len(squads) <= 5:
-        groups = list(squads.items())
-    else:
-        flat = [s for group in squads.values() for s in group]
-        groups = []
-        for i in range(0, len(flat), 25):
-            chunk = flat[i : i + 25]
-            first_squad = chunk[0]['squad']
-            last_squad = chunk[-1]['squad']
-            if first_squad == last_squad:
-                label = first_squad
-            else:
-                label = f"{first_squad[:30]} … {last_squad[:30]}"
-            groups.append((label, chunk))
-        groups = groups[:5]
-
-    menus = []
-    for group_name, group_slots in groups:
-        options = []
-        for slot in group_slots[:25]:
-            if (slot['row'], slot.get('col')) in approved_rows:
-                continue
-            emoji = '🟡' if (slot['row'], slot.get('col')) in pending_rows else '🟢'
-            status = 'Also requested — compete for slot' if (slot['row'], slot.get('col')) in pending_rows else 'Available'
-            # Show full "Squad – Role" as label so squad context is always visible
-            full_label = f"{slot['squad']} – {slot['role']}"
-            options.append(
-                discord.SelectOption(
-                    label=full_label[:100],
-                    value=slot['value'],
-                    description=status,
-                    emoji=emoji,
-                )
-            )
-
-        if options:
-            select = discord.ui.Select(
-                placeholder=f"{group_name}"[:150],
-                options=options,
-                min_values=1,
-                max_values=1,
-            )
-            menus.append(select)
-
-    return menus
-
 
 # ---------------------------------------------------------------------------
 # Shared slot submission logic
@@ -355,6 +293,7 @@ class SquadSelectView(discord.ui.View):
         pending_rows: set,
         approved_rows: set,
         bot: commands.Bot,
+        on_select=None,
     ):
         super().__init__(timeout=300)
         self.squads = squads
@@ -363,6 +302,7 @@ class SquadSelectView(discord.ui.View):
         self.pending_rows = pending_rows
         self.approved_rows = approved_rows
         self.bot = bot
+        self.on_select = on_select  # optional async callable(interaction, slot)
 
         options = []
         for squad_name, slots in squads.items():
@@ -400,6 +340,7 @@ class SquadSelectView(discord.ui.View):
             pending_rows=self.pending_rows,
             approved_rows=self.approved_rows,
             bot=self.bot,
+            on_select=self.on_select,
         )
         await interaction.response.edit_message(
             content=f"**{squad_name}** — select your slot:",
@@ -419,6 +360,7 @@ class SlotSelectView(discord.ui.View):
         pending_rows: set,
         approved_rows: set,
         bot: commands.Bot,
+        on_select=None,
     ):
         super().__init__(timeout=300)
         self.squad_name = squad_name
@@ -428,6 +370,7 @@ class SlotSelectView(discord.ui.View):
         self.pending_rows = pending_rows
         self.approved_rows = approved_rows
         self.bot = bot
+        self.on_select = on_select  # optional async callable(interaction, slot)
 
         options = []
         for slot in slots[:25]:
@@ -461,7 +404,10 @@ class SlotSelectView(discord.ui.View):
                 '❌ Slot not found. Please try again.', ephemeral=True
             )
             return
-        await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
+        if self.on_select:
+            await self.on_select(interaction, slot)
+        else:
+            await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
 
     async def _go_back(self, interaction: discord.Interaction):
         # Re-fetch to pick up any changes while the user was browsing
@@ -474,7 +420,8 @@ class SlotSelectView(discord.ui.View):
             squads.setdefault(slot['squad'], []).append(slot)
 
         view = SquadSelectView(
-            squads, self.all_slots, self.operation_id, pending_rows, approved_rows, self.bot
+            squads, self.all_slots, self.operation_id, pending_rows, approved_rows, self.bot,
+            on_select=self.on_select,
         )
         await interaction.response.edit_message(content='Select your squad:', view=view)
 
@@ -1067,23 +1014,26 @@ class SlotsCog(commands.Cog):
                 open_count = sum(1 for s in available if (s['row'], s.get('col')) not in pending_rows)
                 pending_count = sum(1 for s in available if (s['row'], s.get('col')) in pending_rows)
 
-                picker_embed = discord.Embed(
-                    title=f"🎖️ {data['operation_name']} — Pick a New Slot",
-                    description=(
-                        f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending approval\n\n"
-                        "Select your new slot below."
-                    ),
-                    color=discord.Color.blurple(),
-                )
-                picker_view = SlotRequestView(
-                    slots=available,
+                squads: dict = {}
+                for s in available:
+                    squads.setdefault(s['squad'], []).append(s)
+
+                picker_view = SquadSelectView(
+                    squads=squads,
+                    all_slots=available,
                     operation_id=op['id'],
                     pending_rows=pending_rows,
                     approved_rows=approved_rows,
                     bot=bot_ref,
                 )
                 await btn_interaction.response.send_message(
-                    embed=picker_embed, view=picker_view, ephemeral=True
+                    content=(
+                        f"🎖️ **{data['operation_name']} — Pick a New Slot**\n"
+                        f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending\n\n"
+                        "Select your squad:"
+                    ),
+                    view=picker_view,
+                    ephemeral=True,
                 )
                 asyncio.create_task(_update_orbat(bot_ref, btn_interaction.guild, op))
 
