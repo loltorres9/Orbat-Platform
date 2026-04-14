@@ -105,8 +105,9 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op):
     stored = await database.get_orbat_message(str(guild.id))
     if not stored:
         return
-    channel = guild.get_channel(int(stored['channel_id']))
-    if not channel:
+    try:
+        channel = guild.get_channel(int(stored['channel_id'])) or await guild.fetch_channel(int(stored['channel_id']))
+    except (discord.NotFound, discord.Forbidden):
         return
     try:
         msg = await channel.fetch_message(int(stored['message_id']))
