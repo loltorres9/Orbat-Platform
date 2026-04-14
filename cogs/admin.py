@@ -341,6 +341,7 @@ class AdminCog(commands.Cog):
             f"✅ Cleared **{count}** pending request(s) for **{op['name']}**.",
             ephemeral=True,
         )
+        asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
 
 
     @app_commands.command(

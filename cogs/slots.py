@@ -227,7 +227,21 @@ async def _process_slot_selection(
     embed.timestamp = discord.utils.utcnow()
 
     approval_view = ApprovalView(request_id=request_id, bot=bot)
-    msg = await approval_channel.send(embed=embed, view=approval_view)
+    try:
+        msg = await approval_channel.send(embed=embed, view=approval_view)
+    except Exception as e:
+        # Roll back the DB record so the slot doesn't stay blocked indefinitely
+        await database.deny_request(request_id, 'system', reason='Approval message failed to send')
+        # Best-effort follow-up since response was already sent
+        try:
+            await interaction.followup.send(
+                f"⚠️ Your request was received but the approval message could not be posted (`{e}`). "
+                "The slot has been freed — please try requesting again.",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
+        return
     bot.add_view(approval_view)
 
     await database.update_request_message(
@@ -550,7 +564,7 @@ class ApprovalView(discord.ui.View):
 
         await database.approve_request(self.request_id, interaction.user.display_name)
 
-        # Update Google Sheet
+        # Update Google Sheet — roll back approval if the sheet write fails
         op = await database.get_active_operation(str(interaction.guild_id))
         if op:
             try:
@@ -565,9 +579,13 @@ class ApprovalView(discord.ui.View):
                     req['unit_role'],
                 )
             except Exception as e:
+                # Roll back so the slot doesn't get stuck in approved limbo
+                await database.deny_request(
+                    self.request_id, interaction.user.display_name, reason='Sheet update failed — please re-approve'
+                )
                 await interaction.response.send_message(
-                    f"⚠️ Approved in bot, but sheet update failed: `{e}`\n"
-                    "Please update the sheet manually.",
+                    f"⚠️ Sheet update failed: `{e}`\n"
+                    "The request has been reset to denied so the slot stays open — please try approving again.",
                     ephemeral=True,
                 )
                 return
