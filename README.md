@@ -16,12 +16,15 @@ A Discord bot for managing Arma 3 operation slot requests. Members request slots
 - `/set-event-time <time>` — update the event start time for the current operation
 - `/set-timezone <tz>` — set the server's local timezone for event time input (default: UTC)
 - `/post-orbat [channel]` — manually post or re-post the live ORBAT board
-- `/current-operation` — admin-only: shows which operation is active and links to the sheet
-- `/assign-slot <member>` — assign a member to a slot directly, bypassing approval; uses the same two-step picker
+- `/current-operation` — shows which operation is active and links to the sheet
+- `/assign-slot <member>` — assign a member to a slot directly, bypassing approval; uses the same two-step picker (Unit Leaders scoped to their own unit; Admins unrestricted)
 - `/clear-slot` — remove a member from an approved slot; restores the sheet cell including stripping the unit tag
 - `/clear-requests` — cancel all pending requests for the current operation
+- `/archive-old-approvals` — move pre-existing approved messages from `#slot-approvals` to `#approval-archive` (one-time migration)
+- `/debug-slots` — show the raw slot data the bot reads from the sheet; useful for diagnosing missing slots
 - `/sync` — force-sync slash commands with Discord; also refreshes the live ORBAT embed
 - Approval channel (`#slot-approvals`) with **Approve / Deny** buttons
+- Approved requests are deleted from `#slot-approvals` and archived as a compact embed in `#approval-archive`
 - Denial modal with optional reason text
 - DM notifications to members on submission, approval, and denial
 - Slots marked 🟢 (available), 🟡 (pending / also requested — compete for slot), or 🔴 (filled) in real time
@@ -43,14 +46,14 @@ A Discord bot for managing Arma 3 operation slot requests. Members request slots
 |---|---|---|---|
 | `/request-slot`, `/cancel-request`, `/change-slot`, `/leave-operation` | ✅ | ✅ | ✅ |
 | `/clear-slot` | ❌ | ✅ (own unit only) | ✅ |
-| `/assign-slot` | ❌ | ❌ | ✅ |
+| `/assign-slot` | ❌ | ✅ (own unit only) | ✅ |
 | `/clear-requests`, `/post-orbat`, `/set-event-time`, `/set-timezone` | ❌ | ❌ | ✅ |
-| `/setup-slots`, `/current-operation`, `/sync` | ❌ | ❌ | ✅ |
+| `/setup-slots`, `/current-operation`, `/sync`, `/debug-slots`, `/archive-old-approvals` | ❌ | ❌ | ✅ |
 | Approve / Deny in `#slot-approvals` | ❌ | ✅ (own unit only) | ✅ |
 
-**Unit roles:** `2nd USC`, `CNTO`, `PXG`, `TFP`
+**Unit roles:** `2nd USC`, `CNTO`, `PXG`, `TFP`, `SKUA`
 
-A **Unit Leader** is any member with the `Unit Leader` Discord role. They can approve/deny requests and manage slots for members who share their unit role. Admins (Manage Server permission) have unrestricted access.
+A **Unit Leader** is any member with the `Unit Leader` Discord role. They can approve/deny requests, assign slots, and manage slots for members who share their unit role. Admins (Manage Server permission) have unrestricted access.
 
 ---
 
@@ -226,10 +229,16 @@ Removes you from the operation entirely. Works for both pending and approved slo
 Available to members with the **Unit Leader** Discord role. Scoped to their own unit only.
 
 ```
+/assign-slot @member
+```
+
+Directly assigns a member of your unit to a slot — no approval message, no waiting. Uses the same squad → slot picker. The sheet is updated immediately and the member gets a DM. Blocked if the member already holds a slot; use `/clear-slot` first to reassign.
+
+```
 /clear-slot
 ```
 
-Presents a dropdown of approved slots. Select one to remove the member and free the slot. The sheet cell is restored to `[] <Insert Name>` (unit tag removed). The member receives a DM.
+Presents a dropdown of active slots. Select one to remove the member and free the slot. The sheet cell is restored to `[] <Insert Name>` (unit tag removed). The member receives a DM.
 
 Unit Leaders only see slots belonging to members of their own unit.
 
@@ -245,7 +254,7 @@ Available to members with the **Manage Server** permission. Full access with no 
 /assign-slot @member
 ```
 
-Directly assigns a member to a slot — no approval message, no waiting. Uses the same squad → slot picker. The sheet is updated immediately and the member gets a DM. Blocked if the member already holds a slot; use `/clear-slot` first to reassign.
+Directly assigns any member to any slot — no approval message, no waiting. Uses the same squad → slot picker. The sheet is updated immediately and the member gets a DM. Blocked if the member already holds a slot; use `/clear-slot` first to reassign.
 
 ```
 /setup-slots https://docs.google.com/spreadsheets/d/.../edit
@@ -253,7 +262,7 @@ Directly assigns a member to a slot — no approval message, no waiting. Uses th
 
 Run this once per operation. The previous operation is archived automatically. A live ORBAT embed is posted to `#orbat` (created if it doesn't exist). Optional parameters:
 
-- `event_time` — operation start time in `YYYY-MM-DD HH:MM` or `DD/MM/YYYY HH:MM` format (uses the server's configured timezone)
+- `event_time` — operation start time in `DD/MM/YYYY HH:MM` or `YYYY-MM-DD HH:MM` format (uses the server's configured timezone)
 - `reminder_minutes` — how many minutes before the event to send reminders (default: 30)
 
 ```
@@ -263,7 +272,7 @@ Run this once per operation. The previous operation is archived automatically. A
 Sets the server's local timezone so event times you type are interpreted correctly. Only needs to be set once. Default is UTC.
 
 ```
-/set-event-time 2026-04-05 20:00
+/set-event-time 25/06/2025 20:00
 ```
 
 Updates the event time for the current operation without re-running `/setup-slots`. The ORBAT embed and reminder are updated immediately.
@@ -279,6 +288,18 @@ Manually post or re-post the live ORBAT board. Defaults to the current channel.
 ```
 
 Cancels all pending requests for the current operation (e.g. to reset before an op).
+
+```
+/archive-old-approvals
+```
+
+One-time migration command. Scans `#slot-approvals` for old bot-posted approved messages (green embeds with an Approved field) and moves them to `#approval-archive`. Creates the archive channel if it doesn't exist. Use this once after upgrading from a version that edited approval messages in place.
+
+```
+/debug-slots [squad]
+```
+
+Shows the raw slot data the bot reads from the current sheet. Useful for diagnosing why a slot isn't appearing in the picker. Optionally filter by squad name.
 
 ```
 /current-operation
@@ -298,12 +319,21 @@ Force-syncs slash commands with Discord and refreshes the live ORBAT embed. Only
 
 1. Requested slots appear in `#slot-approvals` (created automatically if it doesn't exist)
 2. An admin or Unit Leader from the same unit clicks **✅ Approve** or **❌ Deny**
-3. On approval: the Google Sheet is updated, the ORBAT board refreshes, and the member gets a DM
+3. On approval:
+   - The Google Sheet is updated
+   - The request is deleted from `#slot-approvals`
+   - A compact record is posted to `#approval-archive` (created automatically if it doesn't exist)
+   - The ORBAT board refreshes
+   - The member gets a DM
    - If other members had requested the same slot, they are automatically denied and notified
 4. On denial: admin optionally provides a reason; member gets a DM and can request again
 5. If a member cancels their request, the approval message is automatically updated to show it was cancelled (greyed out, buttons removed)
 
 **Unit role gating:** Unit Leaders (and admins with a unit role) can only approve/deny requests from members of their own unit. Admins without a unit role can approve any request.
+
+### Approval archive
+
+Every approved slot request is logged to `#approval-archive` as a compact embed showing the operation, unit, member, slot, and approver. The channel is created automatically the first time an approval goes through. To migrate old approved messages that were posted before this feature existed, run `/archive-old-approvals`.
 
 ### Event reminders
 
