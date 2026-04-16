@@ -62,7 +62,7 @@ class AdminCog(commands.Cog):
         description="Deprecated: use /create-operation, /add-squad and /add-slot",
     )
     @app_commands.default_permissions(manage_guild=True)
-    async def setup_slots(self, interaction: discord.Interaction, sheet_url: str):
+    async def setup_slots(self, interaction: discord.Interaction):
         await interaction.response.send_message(
             "Google Sheets import is deprecated. Use `/create-operation`, `/add-squad`, and `/add-slot`.",
             ephemeral=True,

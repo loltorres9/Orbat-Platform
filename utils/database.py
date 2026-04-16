@@ -99,14 +99,6 @@ async def init_db():
             )
         ''')
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS open_slots_messages (
-                guild_id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL,
-                message_id TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        await db.execute('''
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id TEXT PRIMARY KEY,
                 timezone TEXT NOT NULL DEFAULT 'UTC'
@@ -196,34 +188,6 @@ async def get_operation_by_id(operation_id: int):
         )
 
 
-async def create_operation(guild_id: str, name: str, sheet_url: str, sheet_id: str,
-                           squad_col: int, role_col: int, status_col: int, assigned_col: int) -> int:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            'UPDATE operations SET is_active = 0 WHERE guild_id = $1',
-            guild_id,
-        )
-        row = await db.fetchrow(
-            '''INSERT INTO operations
-               (guild_id, name, sheet_url, sheet_id, squad_col, role_col, status_col, assigned_col)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-               RETURNING id''',
-            guild_id, name, sheet_url, sheet_id, squad_col, role_col, status_col, assigned_col,
-        )
-        return row['id']
-
-
-async def get_pending_slots(operation_id: int) -> list:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        rows = await db.fetch(
-            "SELECT sheet_row, sheet_col FROM requests WHERE operation_id = $1 AND status = 'pending'",
-            operation_id,
-        )
-        return [(row['sheet_row'], row['sheet_col']) for row in rows]
-
-
 async def get_pending_slot_ids(operation_id: int) -> set[int]:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -236,16 +200,6 @@ async def get_pending_slot_ids(operation_id: int) -> set[int]:
             operation_id,
         )
         return {int(row["slot_id"]) for row in rows}
-
-
-async def get_approved_slots(operation_id: int) -> list:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        rows = await db.fetch(
-            "SELECT sheet_row, sheet_col FROM requests WHERE operation_id = $1 AND status = 'approved'",
-            operation_id,
-        )
-        return [(row['sheet_row'], row['sheet_col']) for row in rows]
 
 
 async def get_approved_slot_ids(operation_id: int) -> set[int]:
@@ -286,8 +240,8 @@ async def get_member_active_request(guild_id: str, operation_id: int, member_id:
 
 
 async def create_request(guild_id: str, operation_id: int, member_id: str,
-                         member_name: str, slot_label: str, sheet_row: int,
-                         sheet_col: int = None, unit_role: str = None,
+                         member_name: str, slot_label: str, sheet_row: Optional[int] = None,
+                         sheet_col: Optional[int] = None, unit_role: str = None,
                          slot_id: Optional[int] = None) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -299,15 +253,6 @@ async def create_request(guild_id: str, operation_id: int, member_id: str,
             guild_id, operation_id, slot_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role,
         )
         return row['id']
-
-
-async def update_request_sheet_col(request_id: int, sheet_row: int, sheet_col: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            'UPDATE requests SET sheet_row = $1, sheet_col = $2 WHERE id = $3',
-            sheet_row, sheet_col, request_id,
-        )
 
 
 async def update_request_slot_id(request_id: int, slot_id: int):
@@ -382,17 +327,6 @@ async def get_active_requests(operation_id: int) -> list:
         )
 
 
-async def cancel_request_by_id(request_id: int) -> bool:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        result = await db.execute(
-            """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-               WHERE id = $1 AND status = 'approved'""",
-            request_id,
-        )
-        return int(result.split()[-1]) > 0
-
-
 async def cancel_request_any_by_id(request_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -445,29 +379,6 @@ async def get_orbat_message(guild_id: str):
     async with pool.acquire() as db:
         return await db.fetchrow(
             'SELECT channel_id, message_id FROM orbat_messages WHERE guild_id = $1',
-            guild_id,
-        )
-
-
-async def save_open_slots_message(guild_id: str, channel_id: str, message_id: str):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            '''INSERT INTO open_slots_messages (guild_id, channel_id, message_id)
-               VALUES ($1, $2, $3)
-               ON CONFLICT (guild_id) DO UPDATE SET
-                   channel_id = EXCLUDED.channel_id,
-                   message_id = EXCLUDED.message_id,
-                   updated_at = CURRENT_TIMESTAMP''',
-            guild_id, channel_id, message_id,
-        )
-
-
-async def get_open_slots_message(guild_id: str):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetchrow(
-            'SELECT channel_id, message_id FROM open_slots_messages WHERE guild_id = $1',
             guild_id,
         )
 
@@ -526,18 +437,6 @@ async def mark_reminder_fired(operation_id: int):
         await db.execute(
             'UPDATE operations SET reminder_fired = 1 WHERE id = $1',
             operation_id,
-        )
-
-
-async def get_competing_requests(operation_id: int, sheet_row: int, sheet_col: int, exclude_request_id: int) -> list:
-    """Return all other pending requests for the same slot cell (row + col)."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetch(
-            """SELECT * FROM requests
-               WHERE operation_id = $1 AND sheet_row = $2 AND sheet_col = $3
-               AND id != $4 AND status = 'pending'""",
-            operation_id, sheet_row, sheet_col, exclude_request_id,
         )
 
 

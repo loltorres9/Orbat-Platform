@@ -195,7 +195,6 @@ def create_api_app(bot) -> FastAPI:
     app = FastAPI(title="ORBAT API", version="0.1.0")
     app.state.bot = bot
     app.state.ws_hub = WebSocketHub()
-    app.state.pg_listener_conn = None
     app.state.pg_listener_task = None
 
     cors_origins = [o.strip() for o in os.getenv("FRONTEND_ORIGINS", "*").split(",")]
@@ -209,7 +208,6 @@ def create_api_app(bot) -> FastAPI:
 
     async def _pg_listener():
         conn = await asyncpg.connect(database.DATABASE_URL)
-        app.state.pg_listener_conn = conn
 
         def _listener(_connection, _pid, _channel, payload):
             try:
