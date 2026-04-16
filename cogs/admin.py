@@ -6,9 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.slots import (
-    OrbatRequestButton,
     SquadSelectView,
-    _build_orbat_embed,
     _build_slots_state,
     _get_unit_role,
     _update_orbat,
@@ -472,23 +470,6 @@ class AdminCog(commands.Cog):
         else:
             note = ""
         await interaction.followup.send(f"Synced **{len(synced)}** command(s).{note}", ephemeral=True)
-
-    @app_commands.command(name="post-orbat", description="Post a live ORBAT board (Admin only)")
-    @app_commands.describe(channel="Target channel (defaults to current)")
-    @app_commands.default_permissions(manage_guild=True)
-    async def post_orbat(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
-        await interaction.response.defer(ephemeral=True)
-        op = await database.get_active_operation(str(interaction.guild_id))
-        if not op:
-            await interaction.followup.send("No active operation.", ephemeral=True)
-            return
-        target = channel or interaction.channel
-        slots, pending_slot_ids, _ = await _build_slots_state(op["id"])
-        embed = _build_orbat_embed(op["name"], slots, pending_slot_ids, op["event_time"])
-        msg = await target.send(embed=embed, view=OrbatRequestButton(self.bot))
-        await database.save_orbat_message(str(interaction.guild_id), str(target.id), str(msg.id))
-        await interaction.followup.send(f"ORBAT posted to {target.mention}.", ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCog(bot))
