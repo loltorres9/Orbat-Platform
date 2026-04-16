@@ -187,6 +187,15 @@ async def get_active_operation(guild_id: str):
         )
 
 
+async def get_operation_by_id(operation_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            "SELECT * FROM operations WHERE id = $1",
+            operation_id,
+        )
+
+
 async def create_operation(guild_id: str, name: str, sheet_url: str, sheet_id: str,
                            squad_col: int, role_col: int, status_col: int, assigned_col: int) -> int:
     pool = await get_pool()
@@ -223,6 +232,18 @@ async def get_approved_slots(operation_id: int) -> list:
             operation_id,
         )
         return [(row['sheet_row'], row['sheet_col']) for row in rows]
+
+
+async def get_slot_by_id(slot_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            """SELECT s.*, sq.name AS squad_name
+               FROM slots s
+               JOIN squads sq ON sq.id = s.squad_id
+               WHERE s.id = $1""",
+            slot_id,
+        )
 
 
 async def get_member_active_request(guild_id: str, operation_id: int, member_id: str):
@@ -506,6 +527,12 @@ async def _notify_slot_update(db, guild_id: str, operation_id: int, event: str, 
         }
     )
     await db.execute("SELECT pg_notify('slot_updates', $1)", payload)
+
+
+async def emit_slot_update(guild_id: str, operation_id: int, event: str, slot_id: Optional[int] = None):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await _notify_slot_update(db, guild_id, operation_id, event, slot_id)
 
 
 async def create_operation_v2(
