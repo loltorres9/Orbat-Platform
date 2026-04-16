@@ -1,5 +1,6 @@
 import asyncio
 import os
+import traceback
 from datetime import timezone
 
 import discord
@@ -148,7 +149,20 @@ async def _run():
         raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file or Railway variables.")
     bot = ORBATBot()
     await bot.start_api_server()
-    await bot.start(token)
+    bot_task = asyncio.create_task(bot.start(token), name="discord-bot")
+    try:
+        await bot.api_task
+    except Exception:
+        print("API server crashed:")
+        traceback.print_exc()
+        raise
+    finally:
+        if not bot_task.done():
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
 
 
 def main():
