@@ -8,6 +8,15 @@ from api_server import create_api_app
 from bot import ORBATBot
 
 
+def _resolve_port() -> int:
+    raw_port = os.getenv("PORT") or os.getenv("API_PORT") or "8000"
+    try:
+        return int(raw_port)
+    except ValueError:
+        print(f"Invalid PORT value '{raw_port}', falling back to 8000.")
+        return 8000
+
+
 async def _run_bot(bot: ORBATBot, token: str):
     try:
         await bot.start(token)
@@ -20,14 +29,13 @@ async def _run_bot(bot: ORBATBot, token: str):
 
 async def _main():
     token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file or Railway variables.")
 
     bot = ORBATBot()
     app = create_api_app(bot)
 
     host = os.getenv("API_HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", os.getenv("API_PORT", "8000")))
+    port = _resolve_port()
+    print(f"Starting API server on {host}:{port}")
     config = uvicorn.Config(
         app,
         host=host,
@@ -37,11 +45,15 @@ async def _main():
     )
     server = uvicorn.Server(config)
 
-    bot_task = asyncio.create_task(_run_bot(bot, token), name="discord-bot")
+    bot_task = None
+    if token:
+        bot_task = asyncio.create_task(_run_bot(bot, token), name="discord-bot")
+    else:
+        print("DISCORD_TOKEN is not set. API is running without Discord bot.")
     try:
         await server.serve()
     finally:
-        if not bot_task.done():
+        if bot_task and not bot_task.done():
             bot_task.cancel()
             try:
                 await bot_task

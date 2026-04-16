@@ -255,6 +255,18 @@ def create_api_app(bot) -> FastAPI:
 
         app.state.pg_listener_task = asyncio.create_task(_pg_listener())
 
+        def _pg_listener_done(task: asyncio.Task):
+            try:
+                exc = task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc:
+                app.state.startup_warnings.append(f"pg_listener failed: {exc}")
+                print("API warning: pg_listener failed:")
+                traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+        app.state.pg_listener_task.add_done_callback(_pg_listener_done)
+
     @app.on_event("shutdown")
     async def shutdown_event():
         task = app.state.pg_listener_task
