@@ -18,7 +18,6 @@ from utils import database
 
 
 class SessionData(BaseModel):
-    session_token: str
     guild_id: str
     user_id: str
     username: str
@@ -152,6 +151,16 @@ async def _session_from_token(session_token: Optional[str]):
     return session
 
 
+def _serialize_session(session) -> SessionData:
+    return SessionData(
+        guild_id=session["guild_id"],
+        user_id=session["user_id"],
+        username=session["username"],
+        avatar_url=session["avatar_url"],
+        expires_at=session["expires_at"],
+    )
+
+
 def _build_avatar_url(user_data: dict) -> Optional[str]:
     avatar_hash = user_data.get("avatar")
     if not avatar_hash:
@@ -207,6 +216,8 @@ def create_api_app(bot) -> FastAPI:
     )
 
     async def _pg_listener():
+        if not database.DATABASE_URL:
+            raise RuntimeError("DATABASE_URL is not configured.")
         conn = await asyncpg.connect(database.DATABASE_URL)
 
         def _listener(_connection, _pid, _channel, payload):
@@ -273,7 +284,7 @@ def create_api_app(bot) -> FastAPI:
     @app.get("/api/auth/session", response_model=SessionData)
     async def auth_session(orbat_session: Optional[str] = Cookie(default=None)):
         session = await _session_from_token(orbat_session)
-        return SessionData(**dict(session))
+        return _serialize_session(session)
 
     @app.post("/api/auth/logout")
     async def auth_logout(response: Response, orbat_session: Optional[str] = Cookie(default=None)):
@@ -288,6 +299,11 @@ def create_api_app(bot) -> FastAPI:
         if not op:
             raise HTTPException(status_code=404, detail="No active operation.")
         return dict(op)
+
+    @app.get("/api/operations")
+    async def list_operations(guild_id: str):
+        rows = await database.list_operations(guild_id)
+        return [dict(row) for row in rows]
 
     @app.post("/api/operations")
     async def create_operation(payload: OperationCreateInput):

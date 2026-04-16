@@ -1,5 +1,4 @@
 export type Session = {
-  session_token: string;
   guild_id: string;
   user_id: string;
   username: string;

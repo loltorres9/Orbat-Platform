@@ -101,6 +101,7 @@ Base path: `/api`
 - `GET /api/auth/session`
 - `POST /api/auth/logout`
 - `GET /api/operations/active?guild_id=...`
+- `GET /api/operations?guild_id=...`
 - `POST /api/operations`
 - `POST /api/operations/{operation_id}/activate`
 - `GET /api/operations/{operation_id}/orbat`
@@ -124,6 +125,13 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 python bot.py
+```
+
+Optional manual migration:
+
+```sql
+-- run against your Postgres DB
+\i migrations/001_drop_legacy_sheet_columns.sql
 ```
 
 ## Web App (`web/`)
