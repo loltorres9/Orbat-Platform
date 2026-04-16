@@ -224,6 +224,20 @@ async def get_pending_slots(operation_id: int) -> list:
         return [(row['sheet_row'], row['sheet_col']) for row in rows]
 
 
+async def get_pending_slot_ids(operation_id: int) -> set[int]:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        rows = await db.fetch(
+            """SELECT slot_id
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'pending'
+                 AND slot_id IS NOT NULL""",
+            operation_id,
+        )
+        return {int(row["slot_id"]) for row in rows}
+
+
 async def get_approved_slots(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -232,6 +246,20 @@ async def get_approved_slots(operation_id: int) -> list:
             operation_id,
         )
         return [(row['sheet_row'], row['sheet_col']) for row in rows]
+
+
+async def get_approved_slot_ids(operation_id: int) -> set[int]:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        rows = await db.fetch(
+            """SELECT slot_id
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'approved'
+                 AND slot_id IS NOT NULL""",
+            operation_id,
+        )
+        return {int(row["slot_id"]) for row in rows}
 
 
 async def get_slot_by_id(slot_id: int):
@@ -360,6 +388,17 @@ async def cancel_request_by_id(request_id: int) -> bool:
         result = await db.execute(
             """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
                WHERE id = $1 AND status = 'approved'""",
+            request_id,
+        )
+        return int(result.split()[-1]) > 0
+
+
+async def cancel_request_any_by_id(request_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 AND status IN ('pending', 'approved')""",
             request_id,
         )
         return int(result.split()[-1]) > 0
@@ -499,6 +538,22 @@ async def get_competing_requests(operation_id: int, sheet_row: int, sheet_col: i
                WHERE operation_id = $1 AND sheet_row = $2 AND sheet_col = $3
                AND id != $4 AND status = 'pending'""",
             operation_id, sheet_row, sheet_col, exclude_request_id,
+        )
+
+
+async def get_competing_requests_by_slot(operation_id: int, slot_id: int, exclude_request_id: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """SELECT *
+               FROM requests
+               WHERE operation_id = $1
+                 AND slot_id = $2
+                 AND id != $3
+                 AND status = 'pending'""",
+            operation_id,
+            slot_id,
+            exclude_request_id,
         )
 
 
