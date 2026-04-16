@@ -5,7 +5,6 @@ import traceback
 import uvicorn
 
 from api_server import create_api_app
-from bot import ORBATBot
 
 
 def _resolve_port() -> int:
@@ -17,8 +16,20 @@ def _resolve_port() -> int:
         return 8000
 
 
-async def _run_bot(bot: ORBATBot, token: str):
+class _BotStub:
+    def get_guild(self, _guild_id):
+        return None
+
+    def add_view(self, _view):
+        return None
+
+
+async def _run_bot(app, token: str):
     try:
+        from bot import ORBATBot
+
+        bot = ORBATBot()
+        app.state.bot = bot
         await bot.start(token)
     except asyncio.CancelledError:
         raise
@@ -30,8 +41,7 @@ async def _run_bot(bot: ORBATBot, token: str):
 async def _main():
     token = os.getenv("DISCORD_TOKEN")
 
-    bot = ORBATBot()
-    app = create_api_app(bot)
+    app = create_api_app(_BotStub())
 
     host = os.getenv("API_HOST", "0.0.0.0")
     port = _resolve_port()
@@ -47,7 +57,7 @@ async def _main():
 
     bot_task = None
     if token:
-        bot_task = asyncio.create_task(_run_bot(bot, token), name="discord-bot")
+        bot_task = asyncio.create_task(_run_bot(app, token), name="discord-bot")
     else:
         print("DISCORD_TOKEN is not set. API is running without Discord bot.")
     try:

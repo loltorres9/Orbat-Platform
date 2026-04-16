@@ -8,13 +8,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import asyncpg
-import discord
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from cogs.slots import APPROVAL_CHANNEL_NAME, ApprovalView
 from utils import database
 
 
@@ -170,6 +168,12 @@ def _build_avatar_url(user_data: dict) -> Optional[str]:
 
 
 async def _post_approval_request(app: FastAPI, request_id: int, operation, slot, requester_display_name: str):
+    try:
+        import discord
+        from cogs.slots import APPROVAL_CHANNEL_NAME, ApprovalView
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Discord components unavailable: {exc}") from exc
+
     bot = app.state.bot
     guild = bot.get_guild(int(operation["guild_id"]))
     if not guild:
