@@ -3,6 +3,7 @@ import contextlib
 import json
 import os
 import secrets
+import traceback
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -205,6 +206,7 @@ def create_api_app(bot) -> FastAPI:
     app.state.bot = bot
     app.state.ws_hub = WebSocketHub()
     app.state.pg_listener_task = None
+    app.state.startup_warnings = []
 
     cors_origins = [o.strip() for o in os.getenv("FRONTEND_ORIGINS", "*").split(",")]
     app.add_middleware(
@@ -238,7 +240,19 @@ def create_api_app(bot) -> FastAPI:
 
     @app.on_event("startup")
     async def startup_event():
-        await database.init_db()
+        if not database.DATABASE_URL:
+            app.state.startup_warnings.append("DATABASE_URL is not configured.")
+            print("API startup warning: DATABASE_URL is not configured.")
+            return
+
+        try:
+            await database.init_db()
+        except Exception as exc:
+            app.state.startup_warnings.append(f"database.init_db failed: {exc}")
+            print("API startup warning: database.init_db failed:")
+            traceback.print_exc()
+            return
+
         app.state.pg_listener_task = asyncio.create_task(_pg_listener())
 
     @app.on_event("shutdown")
@@ -251,7 +265,7 @@ def create_api_app(bot) -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True}
+        return {"ok": True, "warnings": list(app.state.startup_warnings)}
 
     @app.post("/api/auth/discord/exchange")
     async def auth_exchange(payload: DiscordCodeInput, response: Response):
