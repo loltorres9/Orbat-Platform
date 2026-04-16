@@ -2,10 +2,16 @@ services:
   bot:
     build: .
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - GOOGLE_CREDENTIALS=${GOOGLE_CREDENTIALS}
       - DATABASE_URL=postgresql://orbatuser:${DB_PASSWORD}@db:5432/orbatbot
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET}
+      - DISCORD_REDIRECT_URI=http://localhost:8080/api/auth/callback
+      - FRONTEND_URL=http://localhost:5173
+      - PORT=8080
     depends_on:
       db:
         condition: service_healthy
