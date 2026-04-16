@@ -8,12 +8,17 @@ from api_server import create_api_app
 
 
 def _resolve_port() -> int:
-    raw_port = os.getenv("PORT") or os.getenv("API_PORT") or "8000"
+    raw_port = os.getenv("PORT")
+    if not raw_port:
+        # On Railway web services PORT is injected. If it is missing, this is
+        # very likely not running as an HTTP web service.
+        raise RuntimeError(
+            "PORT is not set. On Railway this usually means the service is not configured as a web service."
+        )
     try:
         return int(raw_port)
     except ValueError:
-        print(f"Invalid PORT value '{raw_port}', falling back to 8000.")
-        return 8000
+        raise RuntimeError(f"Invalid PORT value '{raw_port}'.")
 
 
 class _BotStub:
@@ -43,8 +48,9 @@ async def _main():
 
     app = create_api_app(_BotStub())
 
-    host = os.getenv("API_HOST", "0.0.0.0")
+    host = "0.0.0.0"
     port = _resolve_port()
+    print(f"PORT from env: {os.getenv('PORT')}")
     print(f"Starting API server on {host}:{port}")
     config = uvicorn.Config(
         app,
