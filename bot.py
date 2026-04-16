@@ -60,7 +60,6 @@ class ORBATBot(commands.Bot):
         self.reminder_task.start()
         print("Reminder task started.")
 
-        await self.start_api_server()
         print("--- setup_hook end ---")
 
     async def start_api_server(self):
@@ -143,12 +142,17 @@ class ORBATBot(commands.Bot):
             print(f"Guild sync failed for '{guild.name}': {exc}")
 
 
-def main():
+async def _run():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file or Railway variables.")
     bot = ORBATBot()
-    asyncio.run(bot.start(token))
+    await bot.start_api_server()
+    await bot.start(token)
+
+
+def main():
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
