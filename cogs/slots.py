@@ -187,8 +187,6 @@ async def _process_slot_selection(interaction: discord.Interaction, slot: dict, 
         member_id=str(interaction.user.id),
         member_name=interaction.user.display_name,
         slot_label=slot["label"],
-        sheet_row=None,
-        sheet_col=None,
         unit_role=unit_role,
     )
 

@@ -23,12 +23,6 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 name TEXT NOT NULL,
-                sheet_url TEXT,
-                sheet_id TEXT,
-                squad_col INTEGER,
-                role_col INTEGER,
-                status_col INTEGER,
-                assigned_col INTEGER,
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -42,8 +36,6 @@ async def init_db():
                 member_id TEXT NOT NULL,
                 member_name TEXT NOT NULL,
                 slot_label TEXT NOT NULL,
-                sheet_row INTEGER NOT NULL,
-                sheet_col INTEGER,
                 status TEXT DEFAULT 'pending',
                 approval_message_id TEXT,
                 approval_channel_id TEXT,
@@ -118,17 +110,17 @@ async def init_db():
                 reminder_fired INTEGER DEFAULT 0
         ''')
         await db.execute('''
-            ALTER TABLE operations ALTER COLUMN sheet_url DROP NOT NULL
-        ''')
-        await db.execute('''
-            ALTER TABLE operations ALTER COLUMN sheet_id DROP NOT NULL
-        ''')
-        await db.execute('''
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS slot_id INTEGER
         ''')
-        await db.execute('''
-            ALTER TABLE requests ALTER COLUMN sheet_row DROP NOT NULL
-        ''')
+        # Hard cleanup: drop old sheet-based columns once migrated.
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_url")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_id")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS squad_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS role_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS status_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS assigned_col")
+        await db.execute("ALTER TABLE requests DROP COLUMN IF EXISTS sheet_row")
+        await db.execute("ALTER TABLE requests DROP COLUMN IF EXISTS sheet_col")
         await db.execute('''
             DO $$
             BEGIN
@@ -240,30 +232,18 @@ async def get_member_active_request(guild_id: str, operation_id: int, member_id:
 
 
 async def create_request(guild_id: str, operation_id: int, member_id: str,
-                         member_name: str, slot_label: str, sheet_row: Optional[int] = None,
-                         sheet_col: Optional[int] = None, unit_role: str = None,
+                         member_name: str, slot_label: str, unit_role: str = None,
                          slot_id: Optional[int] = None) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
         row = await db.fetchrow(
             '''INSERT INTO requests
-               (guild_id, operation_id, slot_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               (guild_id, operation_id, slot_id, member_id, member_name, slot_label, unit_role)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                RETURNING id''',
-            guild_id, operation_id, slot_id, member_id, member_name, slot_label, sheet_row, sheet_col, unit_role,
+            guild_id, operation_id, slot_id, member_id, member_name, slot_label, unit_role,
         )
         return row['id']
-
-
-async def update_request_slot_id(request_id: int, slot_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            "UPDATE requests SET slot_id = $1 WHERE id = $2",
-            slot_id,
-            request_id,
-        )
-
 
 async def update_request_message(request_id: int, message_id: str, channel_id: str):
     pool = await get_pool()

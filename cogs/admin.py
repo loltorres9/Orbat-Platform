@@ -353,8 +353,6 @@ class AdminCog(commands.Cog):
                 member_id=str(member.id),
                 member_name=member.display_name,
                 slot_label=slot["label"],
-                sheet_row=None,
-                sheet_col=None,
                 unit_role=_get_unit_role(member),
             )
             await database.approve_request(request_id, sel_interaction.user.display_name)

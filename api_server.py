@@ -411,8 +411,6 @@ def create_api_app(bot) -> FastAPI:
             member_id=session["user_id"],
             member_name=session["username"],
             slot_label=f"{slot['squad_name']} - {slot['role_name']}",
-            sheet_row=None,
-            sheet_col=None,
             unit_role=None,
         )
 
