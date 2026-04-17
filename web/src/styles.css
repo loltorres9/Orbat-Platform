@@ -83,6 +83,34 @@ body {
   font-size: 1.45rem;
 }
 
+.admin-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-section {
+  border: 1px solid #767676;
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(36, 36, 36, 0.45);
+}
+
+.admin-section h3 {
+  margin: 0 0 10px;
+  font-family: "Oswald", "Open Sans", sans-serif;
+  font-size: 1.05rem;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+
+.admin-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
 .login-panel {
   max-width: 520px;
   margin: 70px auto 0;
@@ -418,7 +446,8 @@ button:disabled {
   .squad-head,
   .squad li,
   .admin-item,
-  .modal-head {
+  .modal-head,
+  .admin-section-head {
     flex-direction: column;
     align-items: flex-start;
   }

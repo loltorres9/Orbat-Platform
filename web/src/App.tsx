@@ -857,124 +857,146 @@ function App() {
       <section className="panel">
         <h2>Admin Builder</h2>
         {!permissions?.is_admin && <p className="access-note">Admin access required.</p>}
-        <div className="row">
-          <input
-            value={newOperationName}
-            onChange={(e) => setNewOperationName(e.target.value)}
-            placeholder="New operation name"
-          />
-          <input
-            type="datetime-local"
-            value={newOperationEventTime}
-            onChange={(e) => setNewOperationEventTime(e.target.value)}
-            placeholder="Event time"
-          />
-          <select
-            value={newOperationReminderMinutes}
-            onChange={(e) => setNewOperationReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
-          >
-            <option value={15}>Reminder 15 min before</option>
-            <option value={30}>Reminder 30 min before</option>
-            <option value={45}>Reminder 45 min before</option>
-            <option value={60}>Reminder 60 min before</option>
-          </select>
-          <button onClick={createOperation} disabled={!permissions?.is_admin}>Create Operation</button>
-          {permissions?.is_admin && (
-            <button type="button" className="ghost-btn" onClick={() => setShowAdminModal(true)}>
-              Manage Admins
-            </button>
-          )}
-        </div>
-
-        {operation && permissions?.is_admin && (
-          <>
-            <div className="row">
-              <input
-                value={renameOperationName}
-                onChange={(e) => setRenameOperationName(e.target.value)}
-                placeholder="Operation name"
-              />
-              <button onClick={renameOperation}>Rename Operation</button>
-              <input
-                value={copyOperationName}
-                onChange={(e) => setCopyOperationName(e.target.value)}
-                placeholder="Copied operation name"
-              />
-              <button className="ghost-btn" onClick={copyOperation}>Copy Operation</button>
+        <div className="admin-sections">
+          <div className="admin-section">
+            <div className="admin-section-head">
+              <h3>Operations</h3>
+              <button type="button" className="ghost-btn" onClick={() => setShowAdminModal(true)}>
+                Manage Admins
+              </button>
             </div>
             <div className="row">
               <input
+                value={newOperationName}
+                onChange={(e) => setNewOperationName(e.target.value)}
+                placeholder="New operation name"
+              />
+              <input
                 type="datetime-local"
-                value={scheduleEventTime}
-                onChange={(e) => setScheduleEventTime(e.target.value)}
+                value={newOperationEventTime}
+                onChange={(e) => setNewOperationEventTime(e.target.value)}
                 placeholder="Event time"
               />
               <select
-                value={scheduleReminderMinutes}
-                onChange={(e) => setScheduleReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
+                value={newOperationReminderMinutes}
+                onChange={(e) => setNewOperationReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
               >
                 <option value={15}>Reminder 15 min before</option>
                 <option value={30}>Reminder 30 min before</option>
                 <option value={45}>Reminder 45 min before</option>
                 <option value={60}>Reminder 60 min before</option>
               </select>
-              <button onClick={saveOperationSchedule}>Save Event Schedule</button>
-              <button className="ghost-btn" onClick={exportOperation}>Export Event</button>
+              <button onClick={createOperation} disabled={!permissions?.is_admin}>Create Operation</button>
             </div>
-            <div className="row">
-              <input
-                value={importNameOverride}
-                onChange={(e) => setImportNameOverride(e.target.value)}
-                placeholder="Imported operation name override (optional)"
-              />
-              <label className="inline-check">
+            {operation ? (
+              <div className="row">
                 <input
-                  type="checkbox"
-                  checked={importActivate}
-                  onChange={(e) => setImportActivate(e.target.checked)}
+                  value={renameOperationName}
+                  onChange={(e) => setRenameOperationName(e.target.value)}
+                  placeholder="Operation name"
                 />
-                Activate after import
-              </label>
-              <button className="ghost-btn" onClick={importOperation}>Import Event JSON</button>
-            </div>
-            <div className="row">
-              <textarea
-                value={importJsonText}
-                onChange={(e) => setImportJsonText(e.target.value)}
-                placeholder="Paste exported event JSON here..."
-                rows={6}
-              />
-            </div>
-            <div className="row">
-              <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
-              <input value={laneNameCenter} onChange={(e) => setLaneNameCenter(e.target.value)} placeholder="Center lane name" />
-              <input value={laneNameRight} onChange={(e) => setLaneNameRight(e.target.value)} placeholder="Right lane name" />
-              <button onClick={saveLaneNames}>Save Lane Names</button>
-            </div>
-            <div className="row">
-              <input value={newSquadName} onChange={(e) => setNewSquadName(e.target.value)} placeholder="Squad name" />
-              <input value={newSquadNotes} onChange={(e) => setNewSquadNotes(e.target.value)} placeholder="Squad notes (e.g. Radio CH 1)" />
-              <button onClick={addSquad}>Add Squad</button>
-            </div>
-            <div className="row">
-              <select value={newSlotSquadId} onChange={(e) => setNewSlotSquadId(e.target.value ? Number(e.target.value) : "")}>
-                <option value="">Select squad</option>
-                {orbat?.squads.map((sq) => (
-                  <option key={sq.id} value={sq.id}>
-                    {sq.name}
-                  </option>
-                ))}
-              </select>
-              <input value={newSlotRole} onChange={(e) => setNewSlotRole(e.target.value)} placeholder="Role name" />
-              <select value={newSlotTeam} onChange={(e) => setNewSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}>
-                {TEAM_OPTIONS.map((team) => (
-                  <option key={team || "none"} value={team}>{teamLabel(team)}</option>
-                ))}
-              </select>
-              <button onClick={addSlot}>Add Role</button>
-            </div>
-          </>
-        )}
+                <button onClick={renameOperation}>Rename Operation</button>
+                <input
+                  value={copyOperationName}
+                  onChange={(e) => setCopyOperationName(e.target.value)}
+                  placeholder="Copied operation name"
+                />
+                <button className="ghost-btn" onClick={copyOperation}>Copy Operation</button>
+              </div>
+            ) : null}
+          </div>
+
+          {operation ? (
+            <>
+              <div className="admin-section">
+                <h3>Schedule</h3>
+                <div className="row">
+                  <input
+                    type="datetime-local"
+                    value={scheduleEventTime}
+                    onChange={(e) => setScheduleEventTime(e.target.value)}
+                    placeholder="Event time"
+                  />
+                  <select
+                    value={scheduleReminderMinutes}
+                    onChange={(e) => setScheduleReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
+                  >
+                    <option value={15}>Reminder 15 min before</option>
+                    <option value={30}>Reminder 30 min before</option>
+                    <option value={45}>Reminder 45 min before</option>
+                    <option value={60}>Reminder 60 min before</option>
+                  </select>
+                  <button onClick={saveOperationSchedule}>Save Event Schedule</button>
+                  <button className="ghost-btn" onClick={exportOperation}>Export Event</button>
+                </div>
+              </div>
+
+              <div className="admin-section">
+                <h3>Import Event</h3>
+                <div className="row">
+                  <input
+                    value={importNameOverride}
+                    onChange={(e) => setImportNameOverride(e.target.value)}
+                    placeholder="Imported operation name override (optional)"
+                  />
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={importActivate}
+                      onChange={(e) => setImportActivate(e.target.checked)}
+                    />
+                    Activate after import
+                  </label>
+                  <button className="ghost-btn" onClick={importOperation}>Import Event JSON</button>
+                </div>
+                <div className="row">
+                  <textarea
+                    value={importJsonText}
+                    onChange={(e) => setImportJsonText(e.target.value)}
+                    placeholder="Paste exported event JSON here..."
+                    rows={6}
+                  />
+                </div>
+              </div>
+
+              <div className="admin-section">
+                <h3>Layout</h3>
+                <div className="row">
+                  <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
+                  <input value={laneNameCenter} onChange={(e) => setLaneNameCenter(e.target.value)} placeholder="Center lane name" />
+                  <input value={laneNameRight} onChange={(e) => setLaneNameRight(e.target.value)} placeholder="Right lane name" />
+                  <button onClick={saveLaneNames}>Save Lane Names</button>
+                </div>
+              </div>
+
+              <div className="admin-section">
+                <h3>Squads & Roles</h3>
+                <div className="row">
+                  <input value={newSquadName} onChange={(e) => setNewSquadName(e.target.value)} placeholder="Squad name" />
+                  <input value={newSquadNotes} onChange={(e) => setNewSquadNotes(e.target.value)} placeholder="Squad notes (e.g. Radio CH 1)" />
+                  <button onClick={addSquad}>Add Squad</button>
+                </div>
+                <div className="row">
+                  <select value={newSlotSquadId} onChange={(e) => setNewSlotSquadId(e.target.value ? Number(e.target.value) : "")}>
+                    <option value="">Select squad</option>
+                    {orbat?.squads.map((sq) => (
+                      <option key={sq.id} value={sq.id}>
+                        {sq.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input value={newSlotRole} onChange={(e) => setNewSlotRole(e.target.value)} placeholder="Role name" />
+                  <select value={newSlotTeam} onChange={(e) => setNewSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}>
+                    {TEAM_OPTIONS.map((team) => (
+                      <option key={team || "none"} value={team}>{teamLabel(team)}</option>
+                    ))}
+                  </select>
+                  <button onClick={addSlot}>Add Role</button>
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
       </section>
       ) : null}
 
