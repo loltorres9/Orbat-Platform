@@ -150,9 +150,20 @@ Workflow file:
 
 - `.github/workflows/pages.yml`
 
-Required repository secret:
+Required repository secrets:
 
 - `VITE_API_BASE_URL`
+- `VITE_API_BASE_URL_CODEX`
+
+Published URLs:
+
+- `main`: `https://loltorres9.github.io/Orbat-Platform/`
+- `codex/working-2026-04-16`: `https://loltorres9.github.io/Orbat-Platform/codex-working-2026-04-16/`
+
+Expected secret values:
+
+- `VITE_API_BASE_URL`: main Railway API origin
+- `VITE_API_BASE_URL_CODEX`: codex branch Railway API origin
 
 Example:
 
