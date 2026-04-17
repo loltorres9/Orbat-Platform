@@ -222,6 +222,21 @@ async def _discord_member_has_admin_permissions(app: FastAPI, guild_id: str, use
     return bool(perms.administrator or perms.manage_guild)
 
 
+async def _bot_can_access_guild(app: FastAPI, guild_id: str) -> bool:
+    bot = app.state.bot
+    try:
+        gid = int(guild_id)
+    except (TypeError, ValueError):
+        return False
+    if bot.get_guild(gid) is not None:
+        return True
+    try:
+        await bot.fetch_guild(gid)
+        return True
+    except Exception:
+        return False
+
+
 async def _require_guild_admin(app: FastAPI, session, guild_id: str):
     if await database.is_web_admin(guild_id, session["user_id"]):
         return
@@ -545,7 +560,7 @@ def create_api_app(bot) -> FastAPI:
             guild_id = str(guild.get("id", ""))
             if not guild_id:
                 continue
-            if app.state.bot.get_guild(int(guild_id)) is None:
+            if not await _bot_can_access_guild(app, guild_id):
                 continue
             items.append(
                 {
