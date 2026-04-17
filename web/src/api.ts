@@ -1,4 +1,4 @@
-import type { Operation, OrbatStructure, Session } from "./types";
+import type { GuildPermissions, Operation, OrbatStructure, Session, WebAdminEntry } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 
@@ -48,7 +48,20 @@ export const api = {
       body: JSON.stringify(payload)
     }),
   activateOperation: (operationId: number) =>
-    req<{ ok: boolean }>(`/api/operations/${operationId}/activate`, { method: "POST" })
+    req<{ ok: boolean }>(`/api/operations/${operationId}/activate`, { method: "POST" }),
+  guildPermissions: (guildId: string) =>
+    req<GuildPermissions>(`/api/guilds/${encodeURIComponent(guildId)}/me/permissions`),
+  listGuildAdmins: (guildId: string) =>
+    req<WebAdminEntry[]>(`/api/guilds/${encodeURIComponent(guildId)}/admins`),
+  addGuildAdmin: (guildId: string, payload: { user_id: string; username?: string }) =>
+    req<{ ok: boolean }>(`/api/guilds/${encodeURIComponent(guildId)}/admins`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  removeGuildAdmin: (guildId: string, userId: string) =>
+    req<{ ok: boolean }>(`/api/guilds/${encodeURIComponent(guildId)}/admins/${encodeURIComponent(userId)}`, {
+      method: "DELETE"
+    })
 };
 
 export function discordLoginUrl(guildId?: string): string {

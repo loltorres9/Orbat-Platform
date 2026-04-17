@@ -83,6 +83,16 @@ async def init_db():
             )
         ''')
         await db.execute('''
+            CREATE TABLE IF NOT EXISTS web_admins (
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                added_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        ''')
+        await db.execute('''
             CREATE TABLE IF NOT EXISTS orbat_messages (
                 guild_id TEXT PRIMARY KEY,
                 channel_id TEXT NOT NULL,
@@ -159,6 +169,10 @@ async def init_db():
         await db.execute('''
             CREATE INDEX IF NOT EXISTS idx_web_sessions_token
             ON web_sessions(session_token)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_web_admins_guild
+            ON web_admins(guild_id, created_at)
         ''')
 
 
@@ -790,3 +804,54 @@ async def prune_expired_web_sessions():
     pool = await get_pool()
     async with pool.acquire() as db:
         await db.execute("DELETE FROM web_sessions WHERE expires_at <= CURRENT_TIMESTAMP")
+
+
+async def list_web_admins(guild_id: str) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """SELECT guild_id, user_id, username, added_by, created_at
+               FROM web_admins
+               WHERE guild_id = $1
+               ORDER BY created_at ASC""",
+            guild_id,
+        )
+
+
+async def is_web_admin(guild_id: str, user_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            "SELECT 1 FROM web_admins WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
+        return row is not None
+
+
+async def upsert_web_admin(guild_id: str, user_id: str, username: Optional[str], added_by: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            """INSERT INTO web_admins (guild_id, user_id, username, added_by)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (guild_id, user_id)
+               DO UPDATE SET
+                   username = EXCLUDED.username,
+                   added_by = EXCLUDED.added_by""",
+            guild_id,
+            user_id,
+            username,
+            added_by,
+        )
+
+
+async def delete_web_admin(guild_id: str, user_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            "DELETE FROM web_admins WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
+        return int(result.split()[-1]) > 0

@@ -6,6 +6,21 @@ export type Session = {
   expires_at: string;
 };
 
+export type GuildPermissions = {
+  guild_id: string;
+  is_portal_admin: boolean;
+  is_discord_admin: boolean;
+  is_admin: boolean;
+};
+
+export type WebAdminEntry = {
+  guild_id: string;
+  user_id: string;
+  username?: string | null;
+  added_by?: string | null;
+  created_at: string;
+};
+
 export type Operation = {
   id: number;
   guild_id: string;

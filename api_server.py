@@ -65,6 +65,11 @@ class DiscordCodeInput(BaseModel):
     guild_id: Optional[str] = None
 
 
+class AdminUpsertInput(BaseModel):
+    user_id: str
+    username: Optional[str] = None
+
+
 class WebSocketHub:
     def __init__(self):
         self._connections: dict[int, set[WebSocket]] = {}
@@ -172,6 +177,29 @@ def _with_error_param(target_url: str, message: str) -> str:
         return urlunparse(parsed._replace(query=urlencode(query)))
     except Exception:
         return target_url
+
+
+async def _discord_member_has_admin_permissions(app: FastAPI, guild_id: str, user_id: str) -> bool:
+    bot = app.state.bot
+    guild = bot.get_guild(int(guild_id))
+    if not guild:
+        return False
+    member = guild.get_member(int(user_id))
+    if member is None:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except Exception:
+            return False
+    perms = member.guild_permissions
+    return bool(perms.administrator or perms.manage_guild)
+
+
+async def _require_guild_admin(app: FastAPI, session, guild_id: str):
+    if await database.is_web_admin(guild_id, session["user_id"]):
+        return
+    if await _discord_member_has_admin_permissions(app, guild_id, session["user_id"]):
+        return
+    raise HTTPException(status_code=403, detail="Admin access required for this guild.")
 
 
 async def _session_from_token(session_token: Optional[str]):
@@ -412,6 +440,55 @@ def create_api_app(bot) -> FastAPI:
         response.delete_cookie("orbat_session")
         return {"ok": True}
 
+    @app.get("/api/guilds/{guild_id}/me/permissions")
+    async def guild_permissions(guild_id: str, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        is_portal_admin = await database.is_web_admin(guild_id, session["user_id"])
+        is_discord_admin = await _discord_member_has_admin_permissions(app, guild_id, session["user_id"])
+        return {
+            "guild_id": guild_id,
+            "is_portal_admin": is_portal_admin,
+            "is_discord_admin": is_discord_admin,
+            "is_admin": bool(is_portal_admin or is_discord_admin),
+        }
+
+    @app.get("/api/guilds/{guild_id}/admins")
+    async def guild_admins(guild_id: str, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        await _require_guild_admin(app, session, guild_id)
+        rows = await database.list_web_admins(guild_id)
+        return [dict(row) for row in rows]
+
+    @app.post("/api/guilds/{guild_id}/admins")
+    async def add_guild_admin(
+        guild_id: str,
+        payload: AdminUpsertInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+    ):
+        session = await _session_from_token(orbat_session)
+        await _require_guild_admin(app, session, guild_id)
+        await database.upsert_web_admin(
+            guild_id=guild_id,
+            user_id=payload.user_id,
+            username=payload.username,
+            added_by=session["user_id"],
+        )
+        return {"ok": True}
+
+    @app.delete("/api/guilds/{guild_id}/admins/{user_id}")
+    async def remove_guild_admin(guild_id: str, user_id: str, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        await _require_guild_admin(app, session, guild_id)
+        if user_id == session["user_id"]:
+            # Avoid accidental lockout via self-removal.
+            admins = await database.list_web_admins(guild_id)
+            if len(admins) <= 1:
+                raise HTTPException(status_code=400, detail="Cannot remove the last portal admin.")
+        deleted = await database.delete_web_admin(guild_id, user_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Admin entry not found.")
+        return {"ok": True}
+
     @app.get("/api/operations/active")
     async def get_active_operation(guild_id: str):
         op = await database.get_active_operation(guild_id)
@@ -425,7 +502,9 @@ def create_api_app(bot) -> FastAPI:
         return [dict(row) for row in rows]
 
     @app.post("/api/operations")
-    async def create_operation(payload: OperationCreateInput):
+    async def create_operation(payload: OperationCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        await _require_guild_admin(app, session, payload.guild_id)
         op_id = await database.create_operation_v2(
             guild_id=payload.guild_id,
             name=payload.name,
@@ -437,10 +516,12 @@ def create_api_app(bot) -> FastAPI:
         return dict(operation)
 
     @app.post("/api/operations/{operation_id}/activate")
-    async def activate_operation(operation_id: int):
+    async def activate_operation(operation_id: int, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         success = await database.activate_operation(op["guild_id"], operation_id)
         if not success:
             raise HTTPException(status_code=404, detail="Operation not found.")
@@ -455,15 +536,29 @@ def create_api_app(bot) -> FastAPI:
         return data
 
     @app.post("/api/operations/{operation_id}/squads")
-    async def create_squad(operation_id: int, payload: SquadCreateInput):
+    async def create_squad(operation_id: int, payload: SquadCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         squad_id = await database.create_squad(operation_id, payload.name, payload.display_order)
         return {"id": squad_id}
 
     @app.patch("/api/squads/{squad_id}")
-    async def update_squad(squad_id: int, payload: SquadUpdateInput):
+    async def update_squad(squad_id: int, payload: SquadUpdateInput, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        pool = await database.get_pool()
+        async with pool.acquire() as db:
+            op = await db.fetchrow(
+                """SELECT o.guild_id
+                   FROM squads s JOIN operations o ON o.id = s.operation_id
+                   WHERE s.id = $1""",
+                squad_id,
+            )
+        if not op:
+            raise HTTPException(status_code=404, detail="Squad not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         success = await database.update_squad(
             squad_id=squad_id,
             name=payload.name,
@@ -474,17 +569,31 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.delete("/api/squads/{squad_id}")
-    async def delete_squad(squad_id: int):
+    async def delete_squad(squad_id: int, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        pool = await database.get_pool()
+        async with pool.acquire() as db:
+            op = await db.fetchrow(
+                """SELECT o.guild_id
+                   FROM squads s JOIN operations o ON o.id = s.operation_id
+                   WHERE s.id = $1""",
+                squad_id,
+            )
+        if not op:
+            raise HTTPException(status_code=404, detail="Squad not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         success = await database.delete_squad(squad_id)
         if not success:
             raise HTTPException(status_code=404, detail="Squad not found.")
         return {"ok": True}
 
     @app.post("/api/operations/{operation_id}/slots")
-    async def create_slot(operation_id: int, payload: SlotCreateInput):
+    async def create_slot(operation_id: int, payload: SlotCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         slot_id = await database.create_slot(
             operation_id=operation_id,
             squad_id=payload.squad_id,
@@ -494,7 +603,15 @@ def create_api_app(bot) -> FastAPI:
         return {"id": slot_id}
 
     @app.patch("/api/slots/{slot_id}")
-    async def update_slot(slot_id: int, payload: SlotUpdateInput):
+    async def update_slot(slot_id: int, payload: SlotUpdateInput, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        slot = await database.get_slot_by_id(slot_id)
+        if not slot:
+            raise HTTPException(status_code=404, detail="Slot not found.")
+        op = await database.get_operation_by_id(slot["operation_id"])
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         success = await database.update_slot(
             slot_id=slot_id,
             role_name=payload.role_name,
@@ -506,7 +623,15 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.delete("/api/slots/{slot_id}")
-    async def delete_slot(slot_id: int):
+    async def delete_slot(slot_id: int, orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        slot = await database.get_slot_by_id(slot_id)
+        if not slot:
+            raise HTTPException(status_code=404, detail="Slot not found.")
+        op = await database.get_operation_by_id(slot["operation_id"])
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
         success = await database.delete_slot(slot_id)
         if not success:
             raise HTTPException(status_code=404, detail="Slot not found.")
