@@ -604,6 +604,16 @@ def create_api_app(bot) -> FastAPI:
         session = await _session_from_token(orbat_session, x_orbat_session)
         is_portal_admin = await database.is_web_admin(guild_id, session["user_id"])
         is_discord_admin = await _discord_member_has_admin_permissions(app, guild_id, session["user_id"])
+        # Auto-sync Discord server admins into portal admin table so they appear
+        # in the same admin management list on the web side.
+        if is_discord_admin and not is_portal_admin:
+            await database.upsert_web_admin(
+                guild_id=guild_id,
+                user_id=session["user_id"],
+                username=session.get("username"),
+                added_by="discord_auto",
+            )
+            is_portal_admin = True
         return {
             "guild_id": guild_id,
             "is_portal_admin": is_portal_admin,
