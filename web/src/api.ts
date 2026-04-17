@@ -79,7 +79,7 @@ export const api = {
       squad_id: number;
       role_name: string;
       display_order?: number;
-      team?: "Alpha" | "Bravo" | "Charlie" | "Delta";
+      team?: "Alpha" | "Bravo" | "Charlie" | "Delta" | null;
     }
   ) =>
     req<{ id: number }>(`/api/operations/${operationId}/slots`, {
@@ -92,7 +92,7 @@ export const api = {
       role_name?: string;
       display_order?: number;
       squad_id?: number;
-      team?: "Alpha" | "Bravo" | "Charlie" | "Delta";
+      team?: "Alpha" | "Bravo" | "Charlie" | "Delta" | null;
     }
   ) =>
     req<{ ok: boolean }>(`/api/slots/${slotId}`, {

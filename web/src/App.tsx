@@ -4,7 +4,8 @@ import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session
 
 function App() {
   const SQUAD_LANES = [0, 1, 2] as const;
-  const TEAM_OPTIONS = ["Alpha", "Bravo", "Charlie", "Delta"] as const;
+  const TEAM_OPTIONS = ["", "Alpha", "Bravo", "Charlie", "Delta"] as const;
+  const teamLabel = (team: string) => (team && team.trim() ? team : "Unassigned");
   const defaultLaneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
   const buildAppHashUrl = () =>
@@ -29,14 +30,14 @@ function App() {
   const [newSquadName, setNewSquadName] = useState("");
   const [newSlotSquadId, setNewSlotSquadId] = useState<number | "">("");
   const [newSlotRole, setNewSlotRole] = useState("");
-  const [newSlotTeam, setNewSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("Alpha");
+  const [newSlotTeam, setNewSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("");
   const [newAdminUserId, setNewAdminUserId] = useState("");
   const [newAdminUsername, setNewAdminUsername] = useState("");
   const [editingSquadId, setEditingSquadId] = useState<number | null>(null);
   const [editingSquadName, setEditingSquadName] = useState("");
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
   const [editingSlotName, setEditingSlotName] = useState("");
-  const [editingSlotTeam, setEditingSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("Alpha");
+  const [editingSlotTeam, setEditingSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("");
   const [draggedSquadId, setDraggedSquadId] = useState<number | null>(null);
   const [laneNameLeft, setLaneNameLeft] = useState("Left Wing");
   const [laneNameCenter, setLaneNameCenter] = useState("Center");
@@ -155,7 +156,8 @@ function App() {
     const buckets: Record<string, Slot[]> = {};
     for (const team of TEAM_OPTIONS) buckets[team] = [];
     for (const slot of slots) {
-      const team = slot.team && TEAM_OPTIONS.includes(slot.team) ? slot.team : "Alpha";
+      const rawTeam = slot.team && TEAM_OPTIONS.includes(slot.team as (typeof TEAM_OPTIONS)[number]) ? slot.team : "";
+      const team = rawTeam || "";
       buckets[team].push(slot);
     }
     for (const team of TEAM_OPTIONS) {
@@ -461,7 +463,7 @@ function App() {
           squad_id: created.id,
           role_name: slot.role_name,
           display_order: slot.display_order,
-          team: slot.team || "Alpha",
+          team: slot.team || null,
         });
       }
       await reloadOperation(operation.id);
@@ -476,11 +478,11 @@ function App() {
       await api.addSlot(operation.id, {
         squad_id: Number(newSlotSquadId),
         role_name: newSlotRole.trim(),
-        team: newSlotTeam,
+        team: newSlotTeam || null,
       });
       await reloadOperation(operation.id);
       setNewSlotRole("");
-      setNewSlotTeam("Alpha");
+      setNewSlotTeam("");
     } catch (err) {
       setError(String(err));
     }
@@ -499,13 +501,13 @@ function App() {
   function beginEditSlot(slot: Slot) {
     setEditingSlotId(slot.id);
     setEditingSlotName(slot.role_name);
-    setEditingSlotTeam(slot.team || "Alpha");
+    setEditingSlotTeam((slot.team as (typeof TEAM_OPTIONS)[number]) || "");
   }
 
   function cancelEditSlot() {
     setEditingSlotId(null);
     setEditingSlotName("");
-    setEditingSlotTeam("Alpha");
+    setEditingSlotTeam("");
   }
 
   async function saveEditSlot() {
@@ -517,7 +519,7 @@ function App() {
     try {
       await api.updateSlot(editingSlotId, {
         role_name: editingSlotName.trim(),
-        team: editingSlotTeam,
+        team: editingSlotTeam || null,
       });
       await reloadOperation(operation.id);
       cancelEditSlot();
@@ -671,7 +673,7 @@ function App() {
               <input value={newSlotRole} onChange={(e) => setNewSlotRole(e.target.value)} placeholder="Role name" />
               <select value={newSlotTeam} onChange={(e) => setNewSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}>
                 {TEAM_OPTIONS.map((team) => (
-                  <option key={team} value={team}>{team}</option>
+                  <option key={team || "none"} value={team}>{teamLabel(team)}</option>
                 ))}
               </select>
               <button onClick={addSlot}>Add Role</button>
@@ -745,10 +747,10 @@ function App() {
                             </div>
                           )}
                         </div>
-                        {teamBuckets(squad.slots).map((teamGroup) => (
-                          <div key={teamGroup.team} className="team-group">
-                            <div className="team-group-title">{teamGroup.team}</div>
-                            <ul>
+                          {teamBuckets(squad.slots).map((teamGroup) => (
+                            <div key={teamGroup.team} className="team-group">
+                              <div className="team-group-title">{teamLabel(teamGroup.team)}</div>
+                              <ul>
                               {teamGroup.slots.map((slot) => (
                                 <li key={slot.id}>
                                   <span>
@@ -764,7 +766,7 @@ function App() {
                                           onChange={(e) => setEditingSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}
                                         >
                                           {TEAM_OPTIONS.map((team) => (
-                                            <option key={team} value={team}>{team}</option>
+                                            <option key={team || "none"} value={team}>{teamLabel(team)}</option>
                                           ))}
                                         </select>
                                         <button onClick={saveEditSlot}>Save</button>

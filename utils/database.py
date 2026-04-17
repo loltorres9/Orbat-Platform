@@ -701,8 +701,9 @@ async def update_slot(
     display_order: Optional[int] = None,
     squad_id: Optional[int] = None,
     team: Optional[str] = None,
+    set_team: bool = False,
 ) -> bool:
-    if role_name is None and display_order is None and squad_id is None and team is None:
+    if role_name is None and display_order is None and squad_id is None and not set_team:
         return False
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -714,12 +715,13 @@ async def update_slot(
                SET role_name = COALESCE($1, role_name),
                    display_order = COALESCE($2, display_order),
                    squad_id = COALESCE($3, squad_id),
-                   team = COALESCE($4, team)
-               WHERE id = $5""",
+                   team = CASE WHEN $5 THEN $4 ELSE team END
+               WHERE id = $6""",
             role_name,
             display_order,
             squad_id,
             team,
+            set_team,
             slot_id,
         )
         await _notify_slot_update(db, "", row["operation_id"], "slot_updated", slot_id)

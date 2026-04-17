@@ -189,6 +189,13 @@ def _with_error_param(target_url: str, message: str) -> str:
         return target_url
 
 
+def _field_was_provided(payload: BaseModel, field_name: str) -> bool:
+    field_set = getattr(payload, "model_fields_set", None)
+    if field_set is None:
+        field_set = getattr(payload, "__fields_set__", set())
+    return field_name in field_set
+
+
 async def _discord_member_has_admin_permissions(app: FastAPI, guild_id: str, user_id: str) -> bool:
     bot = app.state.bot
     guild = bot.get_guild(int(guild_id))
@@ -763,7 +770,7 @@ def create_api_app(bot) -> FastAPI:
             squad_id=payload.squad_id,
             role_name=payload.role_name,
             display_order=payload.display_order,
-            team=payload.team,
+            team=(payload.team.strip() if isinstance(payload.team, str) and payload.team.strip() else None),
         )
         return {"id": slot_id}
 
@@ -787,7 +794,8 @@ def create_api_app(bot) -> FastAPI:
             role_name=payload.role_name,
             display_order=payload.display_order,
             squad_id=payload.squad_id,
-            team=payload.team,
+            team=(payload.team.strip() if isinstance(payload.team, str) and payload.team.strip() else None),
+            set_team=_field_was_provided(payload, "team"),
         )
         if not success:
             raise HTTPException(status_code=404, detail="Slot not found or no fields updated.")
