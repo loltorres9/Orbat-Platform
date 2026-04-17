@@ -26,6 +26,7 @@ function App() {
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
 
@@ -50,17 +51,32 @@ function App() {
   const [laneNameCenter, setLaneNameCenter] = useState("Center");
   const [laneNameRight, setLaneNameRight] = useState("Right Wing");
 
-  function extractSessionTokenFromHash(): string | null {
+  function extractSessionToken(): string | null {
+    // Check hash fragment first: /#/app?orbat_session=TOKEN
     const hash = window.location.hash || "";
     const queryIndex = hash.indexOf("?");
-    if (queryIndex < 0) return null;
-    const queryPart = hash.slice(queryIndex + 1);
-    const params = new URLSearchParams(queryPart);
-    const token = params.get("orbat_session");
-    if (!token) return null;
-    const routePart = hash.slice(0, queryIndex);
-    window.location.hash = routePart;
-    return token;
+    if (queryIndex >= 0) {
+      const params = new URLSearchParams(hash.slice(queryIndex + 1));
+      const token = params.get("orbat_session");
+      if (token) {
+        window.location.hash = hash.slice(0, queryIndex);
+        return token;
+      }
+    }
+    // Fallback: query string /?orbat_session=TOKEN (when return_to had no fragment)
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get("orbat_session");
+    if (token) {
+      urlParams.delete("orbat_session");
+      const newSearch = urlParams.toString();
+      const newUrl =
+        window.location.pathname +
+        (newSearch ? `?${newSearch}` : "") +
+        window.location.hash;
+      window.history.replaceState({}, "", newUrl);
+      return token;
+    }
+    return null;
   }
 
   async function refreshGuildAccess(targetGuildId: string) {
@@ -200,7 +216,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const token = extractSessionTokenFromHash();
+    const token = extractSessionToken();
     if (token) {
       setSessionToken(token);
     }
@@ -226,6 +242,8 @@ function App() {
         if (cancelled) return;
         setSession(null);
         setStatus("Disconnected");
+      } finally {
+        if (!cancelled) setSessionLoading(false);
       }
     })();
     return () => {
@@ -249,6 +267,7 @@ function App() {
   }, [session]);
 
   useEffect(() => {
+    if (sessionLoading) return;
     if (!session && route !== "login") {
       window.location.hash = "#/login";
       return;
@@ -256,7 +275,7 @@ function App() {
     if (session && route !== "app") {
       window.location.hash = "#/app";
     }
-  }, [session, route]);
+  }, [session, route, sessionLoading]);
 
   useEffect(() => {
     if (!selectedGuildId) return;
@@ -671,6 +690,17 @@ function App() {
   }
 
   const squadsByLane = laneBuckets(orbat?.squads ?? []);
+
+  if (sessionLoading) {
+    return (
+      <div className="page">
+        <section className="panel login-panel">
+          <h1>ORBAT Platform</h1>
+          <p className="access-note">Connecting...</p>
+        </section>
+      </div>
+    );
+  }
 
   if (!session) {
     return (
