@@ -1,11 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
-import { api, openOperationSocket } from "./api";
-import type { Operation, OrbatStructure } from "./types";
+import { api, discordLoginUrl, openOperationSocket } from "./api";
+import type { Operation, OrbatStructure, Session } from "./types";
 
 function App() {
   const [guildId, setGuildId] = useState("");
   const [operation, setOperation] = useState<Operation | null>(null);
   const [orbat, setOrbat] = useState<OrbatStructure | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
 
@@ -21,6 +22,25 @@ function App() {
     const structure = await api.orbat(op.id);
     setOrbat(structure);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await api.session();
+        if (cancelled) return;
+        setSession(s);
+        setStatus(`Connected as ${s.username}`);
+      } catch {
+        if (cancelled) return;
+        setSession(null);
+        setStatus("Disconnected");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!operation) return;
@@ -51,12 +71,21 @@ function App() {
   }
 
   async function requestSlot(slotId: number) {
-    if (!guildId) return;
+    if (!guildId || !session) return;
     try {
       await api.requestSlot(slotId, guildId);
       if (operation) setOrbat(await api.orbat(operation.id));
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function logout() {
+    try {
+      await api.logout();
+    } finally {
+      setSession(null);
+      setStatus("Disconnected");
     }
   }
 
@@ -106,6 +135,15 @@ function App() {
       <header>
         <h1>ORBAT Platform</h1>
         <p>{status}</p>
+        <div className="row">
+          {session ? (
+            <button onClick={logout}>Logout ({session.username})</button>
+          ) : (
+            <a className="button-link" href={discordLoginUrl(guildId || undefined)}>
+              Login with Discord
+            </a>
+          )}
+        </div>
       </header>
 
       <section className="panel">
@@ -161,7 +199,11 @@ function App() {
                   <span>
                     {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
                   </span>
-                  {!slot.assigned_to_member_name && <button onClick={() => requestSlot(slot.id)}>Request</button>}
+                  {!slot.assigned_to_member_name && (
+                    <button onClick={() => requestSlot(slot.id)} disabled={!session}>
+                      {session ? "Request" : "Login required"}
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>

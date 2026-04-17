@@ -51,6 +51,15 @@ export const api = {
     req<{ ok: boolean }>(`/api/operations/${operationId}/activate`, { method: "POST" })
 };
 
+export function discordLoginUrl(guildId?: string): string {
+  const rawBase = API_BASE || window.location.origin;
+  const returnTo = window.location.href;
+  const params = new URLSearchParams();
+  if (guildId) params.set("guild_id", guildId);
+  params.set("return_to", returnTo);
+  return `${rawBase}/api/auth/discord/login?${params.toString()}`;
+}
+
 export function openOperationSocket(operationId: number, onMessage: (data: unknown) => void): WebSocket {
   const rawBase = API_BASE || window.location.origin;
   const wsBase = rawBase.replace("https://", "wss://").replace("http://", "ws://");

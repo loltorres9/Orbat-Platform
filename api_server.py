@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import traceback
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -11,6 +12,7 @@ import asyncpg
 import httpx
 from fastapi import Cookie, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from utils import database
@@ -141,6 +143,27 @@ async def _discord_oauth_exchange(code: str) -> tuple[dict, dict]:
     return token_data, user_data
 
 
+def _serialize_state(guild_id: Optional[str], return_to: Optional[str]) -> str:
+    return json.dumps(
+        {
+            "guild_id": guild_id or "",
+            "return_to": return_to or "",
+        }
+    )
+
+
+def _deserialize_state(raw_state: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not raw_state:
+        return None, None
+    try:
+        data = json.loads(raw_state)
+        guild_id = data.get("guild_id") or None
+        return_to = data.get("return_to") or None
+        return guild_id, return_to
+    except Exception:
+        return None, None
+
+
 async def _session_from_token(session_token: Optional[str]):
     if not session_token:
         raise HTTPException(status_code=401, detail="Missing session.")
@@ -203,6 +226,39 @@ async def _post_approval_request(app: FastAPI, request_id: int, operation, slot,
     message = await approval_channel.send(embed=embed, view=view)
     bot.add_view(view)
     await database.update_request_message(request_id, str(message.id), str(approval_channel.id))
+
+
+async def _create_session_from_discord(
+    *,
+    response: Response,
+    code: str,
+    guild_id: Optional[str] = None,
+) -> str:
+    token_data, user_data = await _discord_oauth_exchange(code)
+    session_token = secrets.token_urlsafe(48)
+    expires_in = int(token_data.get("expires_in", 604800))
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+    await database.create_web_session(
+        session_token=session_token,
+        guild_id=guild_id or "0",
+        user_id=user_data["id"],
+        username=user_data.get("global_name") or user_data["username"],
+        avatar_url=_build_avatar_url(user_data),
+        access_token=token_data.get("access_token"),
+        refresh_token=token_data.get("refresh_token"),
+        expires_at=expires_at,
+    )
+
+    response.set_cookie(
+        key="orbat_session",
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        secure=os.getenv("COOKIE_SECURE", "true").lower() == "true",
+        max_age=expires_in,
+    )
+    return user_data["id"]
 
 
 def create_api_app(bot) -> FastAPI:
@@ -283,33 +339,40 @@ def create_api_app(bot) -> FastAPI:
     async def health():
         return {"ok": True, "warnings": list(app.state.startup_warnings)}
 
+    @app.get("/api/auth/discord/login")
+    async def auth_discord_login(guild_id: Optional[str] = None, return_to: Optional[str] = None):
+        client_id = os.getenv("DISCORD_CLIENT_ID")
+        redirect_uri = os.getenv("DISCORD_REDIRECT_URI")
+        if not client_id or not redirect_uri:
+            raise HTTPException(status_code=500, detail="Discord OAuth is not configured.")
+
+        params = urlencode(
+            {
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": "identify",
+                "state": _serialize_state(guild_id, return_to),
+                "prompt": "consent",
+            }
+        )
+        return RedirectResponse(url=f"https://discord.com/oauth2/authorize?{params}", status_code=302)
+
+    @app.get("/api/auth/discord/callback")
+    async def auth_discord_callback(code: str, state: Optional[str] = None):
+        guild_id, return_to = _deserialize_state(state)
+        redirect = RedirectResponse(url=return_to or "/", status_code=302)
+        await _create_session_from_discord(response=redirect, code=code, guild_id=guild_id)
+        return redirect
+
     @app.post("/api/auth/discord/exchange")
     async def auth_exchange(payload: DiscordCodeInput, response: Response):
-        token_data, user_data = await _discord_oauth_exchange(payload.code)
-        session_token = secrets.token_urlsafe(48)
-        expires_in = int(token_data.get("expires_in", 604800))
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-        await database.create_web_session(
-            session_token=session_token,
-            guild_id=payload.guild_id or "0",
-            user_id=user_data["id"],
-            username=user_data.get("global_name") or user_data["username"],
-            avatar_url=_build_avatar_url(user_data),
-            access_token=token_data.get("access_token"),
-            refresh_token=token_data.get("refresh_token"),
-            expires_at=expires_at,
+        user_id = await _create_session_from_discord(
+            response=response,
+            code=payload.code,
+            guild_id=payload.guild_id,
         )
-
-        response.set_cookie(
-            key="orbat_session",
-            value=session_token,
-            httponly=True,
-            samesite="lax",
-            secure=os.getenv("COOKIE_SECURE", "true").lower() == "true",
-            max_age=expires_in,
-        )
-        return {"ok": True, "user_id": user_data["id"]}
+        return {"ok": True, "user_id": user_id}
 
     @app.get("/api/auth/session", response_model=SessionData)
     async def auth_session(orbat_session: Optional[str] = Cookie(default=None)):
