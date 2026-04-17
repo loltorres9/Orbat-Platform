@@ -29,7 +29,7 @@ jobs:
           elif [[ "${BRANCH_NAME}" == "claude/general-session-Lb8Lr" ]]; then
             echo "DEPLOY_SUBDIR=claude-general-session" >> "$GITHUB_ENV"
             echo "PUBLIC_BASE_PATH=/Orbat-Platform/claude-general-session/" >> "$GITHUB_ENV"
-            echo "VITE_API_URL=${{ secrets.VITE_API_URL_DEV }}" >> "$GITHUB_ENV"
+            echo "VITE_API_URL=${{ vars.VITE_API_URL_DEV }}" >> "$GITHUB_ENV"
           else
             echo "Unknown branch ${BRANCH_NAME}, skipping deploy"
             exit 1
