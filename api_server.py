@@ -62,6 +62,42 @@ class OperationScheduleInput(BaseModel):
     reminder_minutes: int = 30
 
 
+class EventExportSlot(BaseModel):
+    role_name: str
+    display_order: int = 0
+    team: Optional[str] = None
+
+
+class EventExportSquad(BaseModel):
+    name: str
+    display_order: int = 0
+    column_index: int = 0
+    notes: Optional[str] = None
+    slots: list[EventExportSlot] = []
+
+
+class EventExportOperation(BaseModel):
+    name: str
+    event_time: Optional[datetime] = None
+    reminder_minutes: int = 30
+    lane_name_left: Optional[str] = None
+    lane_name_center: Optional[str] = None
+    lane_name_right: Optional[str] = None
+
+
+class EventExportData(BaseModel):
+    version: int = 1
+    exported_at: datetime
+    operation: EventExportOperation
+    squads: list[EventExportSquad]
+
+
+class OperationImportInput(BaseModel):
+    data: EventExportData
+    name_override: Optional[str] = None
+    activate: bool = False
+
+
 class SlotCreateInput(BaseModel):
     squad_id: int
     role_name: str
@@ -821,6 +857,113 @@ def create_api_app(bot) -> FastAPI:
         if not data["operation"]:
             raise HTTPException(status_code=404, detail="Operation not found.")
         return data
+
+    @app.get("/api/operations/{operation_id}/export")
+    async def export_operation(
+        operation_id: int,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        op = await database.get_operation_by_id(operation_id)
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
+
+        structure = await database.get_orbat_structure(operation_id)
+        if not structure.get("operation"):
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        operation_data = structure["operation"]
+        squads_data = structure["squads"]
+
+        export_payload = {
+            "version": 1,
+            "exported_at": datetime.now(timezone.utc),
+            "operation": {
+                "name": operation_data["name"],
+                "event_time": operation_data.get("event_time"),
+                "reminder_minutes": int(operation_data.get("reminder_minutes") or 30),
+                "lane_name_left": operation_data.get("lane_name_left"),
+                "lane_name_center": operation_data.get("lane_name_center"),
+                "lane_name_right": operation_data.get("lane_name_right"),
+            },
+            "squads": [],
+        }
+        for squad in squads_data:
+            export_payload["squads"].append(
+                {
+                    "name": squad["name"],
+                    "display_order": int(squad.get("display_order") or 0),
+                    "column_index": int(squad.get("column_index") or 0),
+                    "notes": squad.get("notes"),
+                    "slots": [
+                        {
+                            "role_name": slot["role_name"],
+                            "display_order": int(slot.get("display_order") or 0),
+                            "team": slot.get("team"),
+                        }
+                        for slot in squad.get("slots", [])
+                    ],
+                }
+            )
+        return export_payload
+
+    @app.post("/api/guilds/{guild_id}/operations/import")
+    async def import_operation(
+        guild_id: str,
+        payload: OperationImportInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        await _require_guild_admin(app, session, guild_id)
+
+        source_op = payload.data.operation
+        operation_name = (payload.name_override or source_op.name or "").strip()
+        if not operation_name:
+            raise HTTPException(status_code=400, detail="Imported operation name cannot be empty.")
+        reminder = int(source_op.reminder_minutes or 30)
+        if reminder not in {15, 30, 45, 60}:
+            reminder = 30
+
+        new_operation_id = await database.create_operation_v2(
+            guild_id=guild_id,
+            name=operation_name,
+            event_time=source_op.event_time,
+            reminder_minutes=reminder,
+            activate=bool(payload.activate),
+        )
+        await database.update_operation_lane_names(
+            operation_id=new_operation_id,
+            lane_name_left=source_op.lane_name_left,
+            lane_name_center=source_op.lane_name_center,
+            lane_name_right=source_op.lane_name_right,
+        )
+
+        sorted_squads = sorted(
+            payload.data.squads,
+            key=lambda s: (int(s.column_index), int(s.display_order), s.name.lower()),
+        )
+        for squad in sorted_squads:
+            squad_id = await database.create_squad(
+                operation_id=new_operation_id,
+                name=squad.name,
+                display_order=int(squad.display_order),
+                column_index=int(squad.column_index),
+                notes=(squad.notes.strip() if isinstance(squad.notes, str) and squad.notes.strip() else None),
+            )
+            for slot in sorted(squad.slots, key=lambda sl: (int(sl.display_order), sl.role_name.lower())):
+                await database.create_slot(
+                    operation_id=new_operation_id,
+                    squad_id=squad_id,
+                    role_name=slot.role_name,
+                    display_order=int(slot.display_order),
+                    team=(slot.team.strip() if isinstance(slot.team, str) and slot.team.strip() else None),
+                )
+
+        await database.emit_slot_update(guild_id, new_operation_id, "operation_imported")
+        operation = await database.get_operation_by_id(new_operation_id)
+        return dict(operation)
 
     @app.post("/api/operations/{operation_id}/squads")
     async def create_squad(

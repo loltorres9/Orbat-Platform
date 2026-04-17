@@ -52,6 +52,16 @@ export const api = {
   logout: () => req<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   activeOperation: (guildId: string) => req<Operation>(`/api/operations/active?guild_id=${encodeURIComponent(guildId)}`),
   orbat: (operationId: number) => req<OrbatStructure>(`/api/operations/${operationId}/orbat`),
+  exportOperation: (operationId: number) =>
+    req<unknown>(`/api/operations/${operationId}/export`),
+  importOperation: (
+    guildId: string,
+    payload: { data: unknown; name_override?: string; activate?: boolean }
+  ) =>
+    req<Operation>(`/api/guilds/${encodeURIComponent(guildId)}/operations/import`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
   requestSlot: (slotId: number, guildId: string) =>
     req<{ id: number; status: string }>(`/api/slots/${slotId}/request`, {
       method: "POST",

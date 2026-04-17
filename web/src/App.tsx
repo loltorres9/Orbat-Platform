@@ -56,6 +56,9 @@ function App() {
   const [newOperationName, setNewOperationName] = useState("");
   const [newOperationEventTime, setNewOperationEventTime] = useState("");
   const [newOperationReminderMinutes, setNewOperationReminderMinutes] = useState<15 | 30 | 45 | 60>(30);
+  const [importNameOverride, setImportNameOverride] = useState("");
+  const [importActivate, setImportActivate] = useState(false);
+  const [importJsonText, setImportJsonText] = useState("");
   const [renameOperationName, setRenameOperationName] = useState("");
   const [copyOperationName, setCopyOperationName] = useState("");
   const [scheduleEventTime, setScheduleEventTime] = useState("");
@@ -438,6 +441,48 @@ function App() {
       });
       setOperation(updated);
       await reloadOperation(updated.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function exportOperation() {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      const data = await api.exportOperation(operation.id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const safeName = operation.name.replace(/[^a-z0-9-_]+/gi, "_");
+      a.href = url;
+      a.download = `orbat-event-${safeName || operation.id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function importOperation() {
+    if (!guildId || !permissions?.is_admin) return;
+    if (!importJsonText.trim()) {
+      setError("Paste exported event JSON first.");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(importJsonText);
+      const created = await api.importOperation(guildId, {
+        data: parsed,
+        name_override: importNameOverride.trim() || undefined,
+        activate: importActivate,
+      });
+      await reloadOperation(created.id);
+      setStatus(`Imported operation loaded: ${created.name}`);
+      setImportJsonText("");
+      setImportNameOverride("");
+      setImportActivate(false);
     } catch (err) {
       setError(String(err));
     }
@@ -874,6 +919,31 @@ function App() {
                 <option value={60}>Reminder 60 min before</option>
               </select>
               <button onClick={saveOperationSchedule}>Save Event Schedule</button>
+              <button className="ghost-btn" onClick={exportOperation}>Export Event</button>
+            </div>
+            <div className="row">
+              <input
+                value={importNameOverride}
+                onChange={(e) => setImportNameOverride(e.target.value)}
+                placeholder="Imported operation name override (optional)"
+              />
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={importActivate}
+                  onChange={(e) => setImportActivate(e.target.checked)}
+                />
+                Activate after import
+              </label>
+              <button className="ghost-btn" onClick={importOperation}>Import Event JSON</button>
+            </div>
+            <div className="row">
+              <textarea
+                value={importJsonText}
+                onChange={(e) => setImportJsonText(e.target.value)}
+                placeholder="Paste exported event JSON here..."
+                rows={6}
+              />
             </div>
             <div className="row">
               <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
