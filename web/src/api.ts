@@ -82,6 +82,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  updateOperationSchedule: (
+    operationId: number,
+    payload: { event_time?: string | null; reminder_minutes: 15 | 30 | 45 | 60 }
+  ) =>
+    req<Operation>(`/api/operations/${operationId}/schedule`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
   addSquad: (operationId: number, payload: { name: string; display_order?: number; column_index?: number; notes?: string | null }) =>
     req<{ id: number }>(`/api/operations/${operationId}/squads`, {
       method: "POST",

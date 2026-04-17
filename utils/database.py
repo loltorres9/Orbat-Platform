@@ -907,6 +907,17 @@ async def get_orbat_structure(operation_id: int) -> dict:
             "SELECT * FROM slots WHERE operation_id = $1 ORDER BY display_order, id",
             operation_id,
         )
+        pending_by_slot_rows = await db.fetch(
+            """SELECT slot_id, COUNT(*) AS pending_count
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'pending'
+                 AND slot_id IS NOT NULL
+               GROUP BY slot_id""",
+            operation_id,
+        )
+
+    pending_by_slot = {int(r["slot_id"]): int(r["pending_count"]) for r in pending_by_slot_rows}
 
     squad_map = {
         s["id"]: {
@@ -930,6 +941,7 @@ async def get_orbat_structure(operation_id: int) -> dict:
                     "team": slot["team"],
                     "assigned_to_member_id": slot["assigned_to_member_id"],
                     "assigned_to_member_name": slot["assigned_to_member_name"],
+                    "pending_request_count": pending_by_slot.get(int(slot["id"]), 0),
                 }
             )
 

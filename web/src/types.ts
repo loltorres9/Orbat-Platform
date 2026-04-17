@@ -48,6 +48,7 @@ export type Slot = {
   team?: "Alpha" | "Bravo" | "Charlie" | "Delta" | null;
   assigned_to_member_id?: string | null;
   assigned_to_member_name?: string | null;
+  pending_request_count?: number;
 };
 
 export type Squad = {

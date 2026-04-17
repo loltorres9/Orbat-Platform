@@ -57,6 +57,11 @@ class OperationCopyInput(BaseModel):
     activate: bool = False
 
 
+class OperationScheduleInput(BaseModel):
+    event_time: Optional[datetime] = None
+    reminder_minutes: int = 30
+
+
 class SlotCreateInput(BaseModel):
     squad_id: int
     role_name: str
@@ -745,6 +750,29 @@ def create_api_app(bot) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         operation = await database.get_operation_by_id(new_op_id)
+        return dict(operation)
+
+    @app.patch("/api/operations/{operation_id}/schedule")
+    async def update_operation_schedule(
+        operation_id: int,
+        payload: OperationScheduleInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        op = await database.get_operation_by_id(operation_id)
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
+        if payload.reminder_minutes not in {15, 30, 45, 60}:
+            raise HTTPException(status_code=400, detail="Reminder minutes must be one of: 15, 30, 45, 60.")
+        await database.set_event_time(
+            operation_id=operation_id,
+            event_time=payload.event_time,
+            reminder_minutes=payload.reminder_minutes,
+        )
+        await database.emit_slot_update(str(op["guild_id"]), operation_id, "operation_schedule_updated")
+        operation = await database.get_operation_by_id(operation_id)
         return dict(operation)
 
     @app.post("/api/operations/{operation_id}/activate")

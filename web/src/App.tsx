@@ -54,8 +54,12 @@ function App() {
   const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
 
   const [newOperationName, setNewOperationName] = useState("");
+  const [newOperationEventTime, setNewOperationEventTime] = useState("");
+  const [newOperationReminderMinutes, setNewOperationReminderMinutes] = useState<15 | 30 | 45 | 60>(30);
   const [renameOperationName, setRenameOperationName] = useState("");
   const [copyOperationName, setCopyOperationName] = useState("");
+  const [scheduleEventTime, setScheduleEventTime] = useState("");
+  const [scheduleReminderMinutes, setScheduleReminderMinutes] = useState<15 | 30 | 45 | 60>(30);
   const [newSquadName, setNewSquadName] = useState("");
   const [newSquadNotes, setNewSquadNotes] = useState("");
   const [newSlotSquadId, setNewSlotSquadId] = useState<number | "">("");
@@ -312,10 +316,28 @@ function App() {
     if (!operation) {
       setRenameOperationName("");
       setCopyOperationName("");
+      setScheduleEventTime("");
+      setScheduleReminderMinutes(30);
       return;
     }
     setRenameOperationName(operation.name);
     setCopyOperationName(`${operation.name} Copy`);
+    setScheduleReminderMinutes(
+      ([15, 30, 45, 60] as const).includes(operation.reminder_minutes as 15 | 30 | 45 | 60)
+        ? (operation.reminder_minutes as 15 | 30 | 45 | 60)
+        : 30
+    );
+    if (operation.event_time) {
+      const dt = new Date(operation.event_time);
+      if (!Number.isNaN(dt.getTime())) {
+        const local = new Date(dt.getTime() - dt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        setScheduleEventTime(local);
+      } else {
+        setScheduleEventTime("");
+      }
+    } else {
+      setScheduleEventTime("");
+    }
   }, [operation?.id, operation?.name]);
 
   async function onSelectGuild(e: FormEvent) {
@@ -394,10 +416,28 @@ function App() {
       const op = await api.createOperation({
         guild_id: guildId.trim(),
         name: newOperationName.trim(),
+        event_time: newOperationEventTime || null,
+        reminder_minutes: newOperationReminderMinutes,
         activate: true
       });
       await reloadOperation(op.id);
       setNewOperationName("");
+      setNewOperationEventTime("");
+      setNewOperationReminderMinutes(30);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function saveOperationSchedule() {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      const updated = await api.updateOperationSchedule(operation.id, {
+        event_time: scheduleEventTime || null,
+        reminder_minutes: scheduleReminderMinutes,
+      });
+      setOperation(updated);
+      await reloadOperation(updated.id);
     } catch (err) {
       setError(String(err));
     }
@@ -693,7 +733,7 @@ function App() {
         <section className="panel login-panel">
           <h1>ORBAT Platform</h1>
           <div className="login-stack">
-            <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
+            <p className="access-note">Please sign in with Discord first.</p>
             {isEmbedded ? (
               <>
                 <p className="access-note">
@@ -760,12 +800,12 @@ function App() {
             {loading ? "Loading..." : "Load Server"}
           </button>
         </form>
-        {guilds.length === 0 && <p className="access-note">Keine gemeinsamen Server gefunden. Der Bot muss im Server sein.</p>}
+        {guilds.length === 0 && <p className="access-note">No shared servers found. The bot must be present in the server.</p>}
         {permissions && (
-          <p className="access-note">
-            Access: {permissions.is_admin ? "Admin" : "Viewer"} ({permissions.is_discord_admin ? "Discord" : "Portal"} auth)
-          </p>
-        )}
+            <p className="access-note">
+              Access: {permissions.is_admin ? "Admin" : "Viewer"} ({permissions.is_discord_admin ? "Discord" : "Portal"} auth)
+            </p>
+          )}
       </section>
 
       {adminOverlayEnabled && permissions?.is_admin ? (
@@ -778,6 +818,21 @@ function App() {
             onChange={(e) => setNewOperationName(e.target.value)}
             placeholder="New operation name"
           />
+          <input
+            type="datetime-local"
+            value={newOperationEventTime}
+            onChange={(e) => setNewOperationEventTime(e.target.value)}
+            placeholder="Event time"
+          />
+          <select
+            value={newOperationReminderMinutes}
+            onChange={(e) => setNewOperationReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
+          >
+            <option value={15}>Reminder 15 min before</option>
+            <option value={30}>Reminder 30 min before</option>
+            <option value={45}>Reminder 45 min before</option>
+            <option value={60}>Reminder 60 min before</option>
+          </select>
           <button onClick={createOperation} disabled={!permissions?.is_admin}>Create Operation</button>
           {permissions?.is_admin && (
             <button type="button" className="ghost-btn" onClick={() => setShowAdminModal(true)}>
@@ -801,6 +856,24 @@ function App() {
                 placeholder="Copied operation name"
               />
               <button className="ghost-btn" onClick={copyOperation}>Copy Operation</button>
+            </div>
+            <div className="row">
+              <input
+                type="datetime-local"
+                value={scheduleEventTime}
+                onChange={(e) => setScheduleEventTime(e.target.value)}
+                placeholder="Event time"
+              />
+              <select
+                value={scheduleReminderMinutes}
+                onChange={(e) => setScheduleReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
+              >
+                <option value={15}>Reminder 15 min before</option>
+                <option value={30}>Reminder 30 min before</option>
+                <option value={45}>Reminder 45 min before</option>
+                <option value={60}>Reminder 60 min before</option>
+              </select>
+              <button onClick={saveOperationSchedule}>Save Event Schedule</button>
             </div>
             <div className="row">
               <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
@@ -938,7 +1011,12 @@ function App() {
                                       </span>
                                     ) : (
                                       <>
-                                        {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                                        {slot.role_name}{" "}
+                                        {slot.assigned_to_member_name
+                                          ? `- ${slot.assigned_to_member_name}`
+                                          : (slot.pending_request_count || 0) > 0
+                                            ? "(pending)"
+                                            : "(open)"}
                                       </>
                                     )}
                                   </span>
