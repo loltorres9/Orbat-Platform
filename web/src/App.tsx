@@ -26,14 +26,20 @@ function App() {
       return "";
     }
   })();
+  const appHashUrl = `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
   const buildAppHashUrl = () => {
+    // In embedded mode, always return to the app origin itself.
+    // Wrapper pages (e.g. Google Sites/custom domains) keep the token outside the app context.
+    if (isEmbedded) {
+      return appHashUrl;
+    }
     if (configuredReturnTo) {
       return normalizeReturnTo(configuredReturnTo);
     }
-    if (isEmbedded && embeddedReferrerReturnTo) {
+    if (embeddedReferrerReturnTo) {
       return embeddedReferrerReturnTo;
     }
-    return `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
+    return appHashUrl;
   };
   const getRoute = () => (window.location.hash.startsWith("#/app") ? "app" : "login");
   const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
