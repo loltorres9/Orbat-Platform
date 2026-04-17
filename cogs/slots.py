@@ -435,15 +435,21 @@ class DenialModal(discord.ui.Modal, title="Deny Slot Request"):
             asyncio.create_task(_update_orbat(self.bot, guild, op))
 
 
-class ApprovalView(discord.ui.View):
-    def __init__(self, request_id: int, bot: commands.Bot):
-        super().__init__(timeout=None)
-        self.request_id = request_id
-        self.bot = bot
+class ApprovalApproveButton(discord.ui.Button):
+    def __init__(self, request_id: int):
+        super().__init__(
+            label="Approve",
+            style=discord.ButtonStyle.success,
+            custom_id=f"slot_approve:{request_id}",
+        )
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        req = await database.get_request_by_id(self.request_id)
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, ApprovalView):
+            await interaction.response.send_message("Approval view unavailable.", ephemeral=True)
+            return
+
+        req = await database.get_request_by_id(view.request_id)
         if not req or req["status"] != "pending":
             await interaction.response.send_message("This request is no longer pending.", ephemeral=True)
             return
@@ -462,10 +468,10 @@ class ApprovalView(discord.ui.View):
                 return
             await database.assign_slot(slot_id, req["member_id"], req["member_name"])
 
-        await database.approve_request(self.request_id, interaction.user.display_name)
+        await database.approve_request(view.request_id, interaction.user.display_name)
 
         if slot_id:
-            competing = await database.get_competing_requests_by_slot(req["operation_id"], slot_id, self.request_id)
+            competing = await database.get_competing_requests_by_slot(req["operation_id"], slot_id, view.request_id)
             for competitor in competing:
                 await database.deny_request(competitor["id"], interaction.user.display_name, "Another member was approved first.")
                 try:
@@ -491,11 +497,32 @@ class ApprovalView(discord.ui.View):
             await database.emit_slot_update(str(interaction.guild.id), req["operation_id"], "request_approved", slot_id)
         op = await database.get_operation_by_id(req["operation_id"])
         if op:
-            asyncio.create_task(_update_orbat(self.bot, interaction.guild, op))
+            asyncio.create_task(_update_orbat(view.bot, interaction.guild, op))
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(DenialModal(self.request_id, self.bot))
+
+class ApprovalDenyButton(discord.ui.Button):
+    def __init__(self, request_id: int):
+        super().__init__(
+            label="Deny",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"slot_deny:{request_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not isinstance(view, ApprovalView):
+            await interaction.response.send_message("Approval view unavailable.", ephemeral=True)
+            return
+        await interaction.response.send_modal(DenialModal(view.request_id, view.bot))
+
+
+class ApprovalView(discord.ui.View):
+    def __init__(self, request_id: int, bot: commands.Bot):
+        super().__init__(timeout=None)
+        self.request_id = request_id
+        self.bot = bot
+        self.add_item(ApprovalApproveButton(request_id))
+        self.add_item(ApprovalDenyButton(request_id))
 
 
 class OrbatRequestButton(discord.ui.View):
