@@ -9,8 +9,18 @@ function App() {
   const teamGroupTitle = (team: string) => (team && team.trim() ? team : "");
   const defaultLaneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
-  const buildAppHashUrl = () =>
-    `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
+  const configuredReturnTo = (import.meta.env.VITE_AUTH_RETURN_TO_URL as string | undefined)?.trim();
+  const normalizeReturnTo = (target: string) => {
+    if (!target) return target;
+    if (target.includes("#/")) return target;
+    return `${target.replace(/\/+$/, "")}#/app`;
+  };
+  const buildAppHashUrl = () => {
+    if (configuredReturnTo) {
+      return normalizeReturnTo(configuredReturnTo);
+    }
+    return `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
+  };
   const getRoute = () => (window.location.hash.startsWith("#/app") ? "app" : "login");
   const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
 
