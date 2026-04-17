@@ -109,6 +109,10 @@ body {
   margin-bottom: 10px;
 }
 
+.compact-row {
+  margin-bottom: 0;
+}
+
 input,
 select,
 button,

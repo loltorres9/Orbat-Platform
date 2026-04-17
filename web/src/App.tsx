@@ -28,6 +28,8 @@ function App() {
   const [newSlotRole, setNewSlotRole] = useState("");
   const [newAdminUserId, setNewAdminUserId] = useState("");
   const [newAdminUsername, setNewAdminUsername] = useState("");
+  const [editingSquadId, setEditingSquadId] = useState<number | null>(null);
+  const [editingSquadName, setEditingSquadName] = useState("");
 
   function extractSessionTokenFromHash(): string | null {
     const hash = window.location.hash || "";
@@ -286,6 +288,48 @@ function App() {
     }
   }
 
+  function beginEditSquad(squad: Squad) {
+    setEditingSquadId(squad.id);
+    setEditingSquadName(squad.name);
+  }
+
+  function cancelEditSquad() {
+    setEditingSquadId(null);
+    setEditingSquadName("");
+  }
+
+  async function saveEditSquad() {
+    if (!editingSquadId || !operation || !permissions?.is_admin) return;
+    if (!editingSquadName.trim()) {
+      setError("Squad name cannot be empty.");
+      return;
+    }
+    try {
+      await api.updateSquad(editingSquadId, { name: editingSquadName.trim() });
+      await reloadOperation(operation.id);
+      cancelEditSquad();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function moveSquad(squad: Squad, direction: "up" | "down") {
+    if (!operation || !permissions?.is_admin || !orbat) return;
+    const ordered = [...orbat.squads].sort((a, b) => a.display_order - b.display_order);
+    const idx = ordered.findIndex((s) => s.id === squad.id);
+    if (idx < 0) return;
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= ordered.length) return;
+    const other = ordered[swapIdx];
+    try {
+      await api.updateSquad(squad.id, { display_order: other.display_order });
+      await api.updateSquad(other.id, { display_order: squad.display_order });
+      await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function copySquad(squad: Squad) {
     if (!operation || !permissions?.is_admin) return;
     try {
@@ -459,9 +503,24 @@ function App() {
             {orbat?.squads.map((squad) => (
               <div key={squad.id} className="squad">
                 <div className="squad-head">
-                  <h3>{squad.name}</h3>
+                  {editingSquadId === squad.id ? (
+                    <div className="row compact-row">
+                      <input
+                        value={editingSquadName}
+                        onChange={(e) => setEditingSquadName(e.target.value)}
+                        placeholder="Squad name"
+                      />
+                      <button onClick={saveEditSquad}>Save</button>
+                      <button className="ghost-btn" onClick={cancelEditSquad}>Cancel</button>
+                    </div>
+                  ) : (
+                    <h3>{squad.name}</h3>
+                  )}
                   {permissions?.is_admin && (
                     <div className="squad-actions">
+                      <button className="ghost-btn" onClick={() => moveSquad(squad, "up")}>Up</button>
+                      <button className="ghost-btn" onClick={() => moveSquad(squad, "down")}>Down</button>
+                      <button className="ghost-btn" onClick={() => beginEditSquad(squad)}>Rename</button>
                       <button className="ghost-btn" onClick={() => copySquad(squad)}>Copy Squad</button>
                       <button className="danger-btn" onClick={() => deleteSquad(squad.id)}>Delete Squad</button>
                     </div>

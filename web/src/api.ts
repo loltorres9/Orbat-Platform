@@ -66,6 +66,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  updateSquad: (squadId: number, payload: { name?: string; display_order?: number }) =>
+    req<{ ok: boolean }>(`/api/squads/${squadId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
   deleteSquad: (squadId: number) =>
     req<{ ok: boolean }>(`/api/squads/${squadId}`, { method: "DELETE" }),
   addSlot: (operationId: number, payload: { squad_id: number; role_name: string; display_order?: number }) =>
