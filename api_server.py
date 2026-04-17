@@ -295,13 +295,24 @@ async def _require_guild_admin(app: FastAPI, session, guild_id: str):
 
 
 async def _session_from_token(session_token: Optional[str], header_token: Optional[str] = None):
-    token = session_token or header_token
-    if not token:
+    # Header token must take precedence over cookie token:
+    # browsers can carry stale HttpOnly cookies while the frontend already has
+    # a fresh `orbat_session` token from OAuth return URL.
+    candidates: list[str] = []
+    if header_token:
+        candidates.append(header_token)
+    if session_token and session_token != header_token:
+        candidates.append(session_token)
+
+    if not candidates:
         raise HTTPException(status_code=401, detail="Missing session.")
-    session = await database.get_web_session(token)
-    if not session:
-        raise HTTPException(status_code=401, detail="Session expired or invalid.")
-    return session
+
+    for token in candidates:
+        session = await database.get_web_session(token)
+        if session:
+            return session
+
+    raise HTTPException(status_code=401, detail="Session expired or invalid.")
 
 
 def _serialize_session(session) -> SessionData:
