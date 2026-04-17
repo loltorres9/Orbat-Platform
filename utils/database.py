@@ -279,6 +279,16 @@ async def update_request_message(request_id: int, message_id: str, channel_id: s
         )
 
 
+async def update_request_unit_role(request_id: int, unit_role: Optional[str]):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            "UPDATE requests SET unit_role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            unit_role,
+            request_id,
+        )
+
+
 async def get_request_by_id(request_id: int):
     pool = await get_pool()
     async with pool.acquire() as db:

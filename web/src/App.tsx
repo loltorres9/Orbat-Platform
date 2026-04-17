@@ -5,7 +5,8 @@ import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session
 function App() {
   const SQUAD_LANES = [0, 1, 2] as const;
   const TEAM_OPTIONS = ["", "Alpha", "Bravo", "Charlie", "Delta"] as const;
-  const teamLabel = (team: string) => (team && team.trim() ? team : "Unassigned");
+  const teamLabel = (team: string) => (team && team.trim() ? team : "No Team");
+  const teamGroupTitle = (team: string) => (team && team.trim() ? team : "");
   const defaultLaneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
   const buildAppHashUrl = () =>
@@ -749,7 +750,9 @@ function App() {
                         </div>
                           {teamBuckets(squad.slots).map((teamGroup) => (
                             <div key={teamGroup.team} className="team-group">
-                              <div className="team-group-title">{teamLabel(teamGroup.team)}</div>
+                              {teamGroup.team.trim() ? (
+                                <div className="team-group-title">{teamGroupTitle(teamGroup.team)}</div>
+                              ) : null}
                               <ul>
                               {teamGroup.slots.map((slot) => (
                                 <li key={slot.id}>
@@ -785,14 +788,28 @@ function App() {
                                       </button>
                                     )}
                                     {permissions?.is_admin && (
-                                      <>
-                                        <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
-                                        <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
+                                      <div className="reorder-controls">
+                                        <button
+                                          className="ghost-btn arrow-btn"
+                                          onClick={() => moveSlot(squad, slot, "up")}
+                                          title="Move role up"
+                                          aria-label="Move role up"
+                                        >
+                                          ↑
+                                        </button>
+                                        <button
+                                          className="ghost-btn arrow-btn"
+                                          onClick={() => moveSlot(squad, slot, "down")}
+                                          title="Move role down"
+                                          aria-label="Move role down"
+                                        >
+                                          ↓
+                                        </button>
                                         <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
                                         <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
                                           Delete Role
                                         </button>
-                                      </>
+                                      </div>
                                     )}
                                   </div>
                                 </li>

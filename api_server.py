@@ -246,10 +246,18 @@ def _build_avatar_url(user_data: dict) -> Optional[str]:
     return f"https://cdn.discordapp.com/avatars/{user_data['id']}/{avatar_hash}.png"
 
 
-async def _post_approval_request(app: FastAPI, request_id: int, operation, slot, requester_display_name: str):
+async def _post_approval_request(
+    app: FastAPI,
+    request_id: int,
+    operation,
+    slot,
+    requester_member,
+    requester_user_id: str,
+    unit_role_name: Optional[str],
+):
     try:
         import discord
-        from cogs.slots import APPROVAL_CHANNEL_NAME, ApprovalView
+        from cogs.slots import APPROVAL_CHANNEL_NAME, ApprovalView, _resolve_unit_role_obj
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Discord components unavailable: {exc}") from exc
 
@@ -268,12 +276,18 @@ async def _post_approval_request(app: FastAPI, request_id: int, operation, slot,
         except discord.Forbidden as exc:
             raise HTTPException(status_code=403, detail="Bot cannot create/find approval channel.") from exc
 
+    role_obj = _resolve_unit_role_obj(guild, unit_role_name)
+    color = role_obj.color if role_obj and role_obj.color.value else discord.Color.yellow()
+    requester_mention = requester_member.mention if requester_member else f"<@{requester_user_id}>"
+    unit_mention = role_obj.mention if role_obj else "*No unit role found*"
     embed = discord.Embed(
         description=(
             f"**{operation['name']}**\n"
-            f"**{requester_display_name}** -> **{slot['squad_name']} - {slot['role_name']}**"
+            f"Requester: {requester_mention}\n"
+            f"Unit: {unit_mention}\n"
+            f"Requested Slot: **{slot['squad_name']} - {slot['role_name']}**"
         ),
-        color=discord.Color.yellow(),
+        color=color,
     )
     embed.set_footer(text=f"Request ID: {request_id}")
     embed.timestamp = discord.utils.utcnow()
@@ -855,6 +869,25 @@ def create_api_app(bot) -> FastAPI:
             if existing:
                 raise HTTPException(status_code=409, detail="You already have an active request.")
 
+            import discord
+            from cogs.slots import UNIT_ROLES
+
+            guild = app.state.bot.get_guild(int(payload.guild_id))
+            requester_member = None
+            requester_unit_role_name = None
+            if guild:
+                try:
+                    requester_member = guild.get_member(int(session["user_id"])) or await guild.fetch_member(
+                        int(session["user_id"])
+                    )
+                except (discord.NotFound, discord.Forbidden):
+                    requester_member = None
+            if requester_member:
+                for role in requester_member.roles:
+                    if role.name in UNIT_ROLES:
+                        requester_unit_role_name = role.name
+                        break
+
             request_id = await database.create_request(
                 guild_id=payload.guild_id,
                 operation_id=slot["operation_id"],
@@ -862,11 +895,19 @@ def create_api_app(bot) -> FastAPI:
                 member_id=session["user_id"],
                 member_name=session["username"],
                 slot_label=f"{slot['squad_name']} - {slot['role_name']}",
-                unit_role=None,
+                unit_role=requester_unit_role_name,
             )
 
             try:
-                await _post_approval_request(app, request_id, operation, slot, session["username"])
+                await _post_approval_request(
+                    app,
+                    request_id,
+                    operation,
+                    slot,
+                    requester_member,
+                    session["user_id"],
+                    requester_unit_role_name,
+                )
             except Exception:
                 await database.deny_request(request_id, "system", reason="Approval message failed")
                 raise

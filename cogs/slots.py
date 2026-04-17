@@ -24,8 +24,14 @@ def _can_action_request(approver: discord.Member, unit_role: Optional[str]) -> b
     if perms.manage_guild or perms.administrator:
         return True
     if unit_role is None:
-        return True
+        return False
     return any(role.name == unit_role for role in approver.roles)
+
+
+def _resolve_unit_role_obj(guild: discord.Guild, unit_role: Optional[str]) -> Optional[discord.Role]:
+    if not unit_role:
+        return None
+    return discord.utils.get(guild.roles, name=unit_role)
 
 
 async def _build_slots_state(operation_id: int) -> tuple[list[dict], set[int], set[int]]:
@@ -148,14 +154,19 @@ async def _post_approval_message(bot: commands.Bot, interaction: discord.Interac
         )
 
     color = discord.Color.yellow()
-    if unit_role:
-        role_obj = discord.utils.get(interaction.guild.roles, name=unit_role)
-        if role_obj and role_obj.color.value:
+    role_obj = _resolve_unit_role_obj(interaction.guild, unit_role)
+    if role_obj and role_obj.color.value:
             color = role_obj.color
 
-    unit_line = f" | {unit_role}" if unit_role else ""
+    requester_mention = interaction.user.mention
+    unit_line = role_obj.mention if role_obj else "*No unit role found*"
     embed = discord.Embed(
-        description=f"**{op['name']}**{unit_line}\n{interaction.user.mention} -> **{slot_label}**",
+        description=(
+            f"**{op['name']}**\n"
+            f"Requester: {requester_mention}\n"
+            f"Unit: {unit_line}\n"
+            f"Requested Slot: **{slot_label}**"
+        ),
         color=color,
     )
     embed.set_footer(text=f"Request ID: {request_id}")
@@ -168,6 +179,50 @@ async def _post_approval_message(bot: commands.Bot, interaction: discord.Interac
     except ValueError:
         pass
     await database.update_request_message(request_id, str(msg.id), str(approval_channel.id))
+
+
+async def _archive_and_delete_request_message(
+    interaction: discord.Interaction,
+    req,
+    approved: bool,
+    reason: Optional[str] = None,
+):
+    archive_channel = discord.utils.get(interaction.guild.text_channels, name=APPROVAL_ARCHIVE_CHANNEL_NAME)
+    if archive_channel is None:
+        archive_channel = await interaction.guild.create_text_channel(APPROVAL_ARCHIVE_CHANNEL_NAME)
+
+    role_obj = _resolve_unit_role_obj(interaction.guild, req.get("unit_role"))
+    color = discord.Color.yellow()
+    if role_obj and role_obj.color.value:
+        color = role_obj.color
+
+    status_title = "Request Approved" if approved else "Request Denied"
+    status_line = "approved" if approved else "denied"
+    details = [
+        f"Member: <@{req['member_id']}>",
+        f"Slot: **{req['slot_label']}**",
+        f"Unit: {role_obj.mention if role_obj else 'n/a'}",
+        f"By: {interaction.user.mention}",
+    ]
+    if not approved and reason:
+        details.append(f"Reason: {reason}")
+
+    archive_embed = discord.Embed(
+        title=status_title,
+        description="\n".join(details),
+        color=color,
+    )
+    archive_embed.timestamp = discord.utils.utcnow()
+    await archive_channel.send(embed=archive_embed)
+
+    if req.get("approval_channel_id") and req.get("approval_message_id"):
+        source_channel = interaction.guild.get_channel(int(req["approval_channel_id"]))
+        if source_channel:
+            try:
+                source_message = await source_channel.fetch_message(int(req["approval_message_id"]))
+                await source_message.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
 
 
 async def _process_slot_selection(interaction: discord.Interaction, slot: dict, operation_id: int, bot: commands.Bot):
@@ -360,13 +415,8 @@ class DenialModal(discord.ui.Modal, title="Deny Slot Request"):
         reason = (self.reason.value or "").strip() or "No reason provided"
         await database.deny_request(self.request_id, interaction.user.display_name, reason)
 
-        embed = discord.Embed(
-            title="Request Denied",
-            description=f"Request **{req['slot_label']}** denied by {interaction.user.mention}.\nReason: {reason}",
-            color=discord.Color.red(),
-        )
-        embed.timestamp = discord.utils.utcnow()
-        await interaction.response.edit_message(embed=embed, view=discord.ui.View())
+        await _archive_and_delete_request_message(interaction, req, approved=False, reason=reason)
+        await interaction.response.send_message("Request denied and archived.", ephemeral=True)
 
         guild = interaction.guild
         if req.get("member_id"):
@@ -426,13 +476,8 @@ class ApprovalView(discord.ui.View):
                 except (discord.Forbidden, discord.NotFound):
                     pass
 
-        embed = discord.Embed(
-            title="Request Approved",
-            description=f"{req['member_name']} approved for **{req['slot_label']}** by {interaction.user.mention}.",
-            color=discord.Color.green(),
-        )
-        embed.timestamp = discord.utils.utcnow()
-        await interaction.response.edit_message(embed=embed, view=discord.ui.View())
+        await _archive_and_delete_request_message(interaction, req, approved=True)
+        await interaction.response.send_message("Request approved and archived.", ephemeral=True)
 
         try:
             member = await interaction.guild.fetch_member(int(req["member_id"]))
