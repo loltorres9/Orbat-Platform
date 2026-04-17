@@ -12,6 +12,7 @@ function App() {
   const buildAppHashUrl = () =>
     `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
   const getRoute = () => (window.location.hash.startsWith("#/app") ? "app" : "login");
+  const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
 
   const [route, setRoute] = useState<"login" | "app">(getRoute());
   const [guildId, setGuildId] = useState("");
@@ -347,6 +348,16 @@ function App() {
     }
   }
 
+  function startDiscordLogin() {
+    const loginUrl = discordLoginUrl(undefined, buildAppHashUrl());
+    if (isEmbedded) {
+      window.open(loginUrl, "_blank", "noopener,noreferrer");
+      setError("Complete Discord login in the new tab, then return here and refresh.");
+      return;
+    }
+    window.location.href = loginUrl;
+  }
+
   async function createOperation() {
     if (!guildId.trim()) {
       setError("Please select a guild first.");
@@ -664,9 +675,14 @@ function App() {
           <h1>ORBAT Platform</h1>
           <div className="login-stack">
             <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
-            <a className="button-link" href={discordLoginUrl(undefined, buildAppHashUrl())}>
+            <button type="button" className="button-link" onClick={startDiscordLogin}>
               Login with Discord
-            </a>
+            </button>
+            {isEmbedded ? (
+              <p className="access-note">
+                Embedded mode detected: Discord login opens in a new tab because Discord blocks iframe auth.
+              </p>
+            ) : null}
             {error && <p className="error">{error}</p>}
           </div>
         </section>
