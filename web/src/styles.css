@@ -1,12 +1,12 @@
 :root {
-  --bg: #0f1511;
-  --bg-2: #131b16;
-  --panel: rgba(19, 27, 22, 0.86);
-  --panel-border: #2f4437;
-  --text: #e9efe9;
-  --muted: #9eb2a3;
-  --accent: #5f8450;
-  --accent-2: #90b37e;
+  --bg: #101317;
+  --bg-2: #1a1f26;
+  --panel: rgba(23, 28, 35, 0.9);
+  --panel-border: #3a434f;
+  --text: #edf1f6;
+  --muted: #a8b2be;
+  --accent: #7f8b98;
+  --accent-2: #bec7d0;
   --danger: #ff6a6a;
 }
 
@@ -19,8 +19,8 @@ body {
   color: var(--text);
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
   background:
-    linear-gradient(120deg, rgba(95, 132, 80, 0.1), transparent 40%),
-    radial-gradient(circle at top right, rgba(144, 179, 126, 0.12), transparent 50%),
+    linear-gradient(120deg, rgba(127, 139, 152, 0.12), transparent 40%),
+    radial-gradient(circle at top right, rgba(190, 199, 208, 0.11), transparent 50%),
     repeating-linear-gradient(
       0deg,
       transparent,
@@ -45,7 +45,7 @@ body {
   align-items: flex-start;
   padding: 18px;
   border: 1px solid var(--panel-border);
-  background: linear-gradient(145deg, rgba(17, 24, 19, 0.9), rgba(20, 30, 24, 0.85));
+  background: linear-gradient(145deg, rgba(21, 25, 31, 0.92), rgba(27, 33, 41, 0.88));
   border-radius: 12px;
   box-shadow: 0 16px 34px rgba(0, 0, 0, 0.3);
 }
@@ -97,23 +97,23 @@ select,
 button,
 .button-link {
   border-radius: 8px;
-  border: 1px solid #405848;
+  border: 1px solid #4b5563;
   padding: 10px 12px;
 }
 
 input,
 select {
   min-width: 230px;
-  background: #111914;
+  background: #141922;
   color: var(--text);
 }
 
 button,
 .button-link {
-  background: linear-gradient(180deg, #6a9259, #57794a);
-  color: #f3f7f2;
+  background: linear-gradient(180deg, #8f99a6, #7a8593);
+  color: #f4f7fb;
   font-weight: 600;
-  border: 1px solid #6f9a5c;
+  border: 1px solid #9aa3af;
   cursor: pointer;
   text-decoration: none;
   transition: transform 120ms ease, filter 120ms ease;
@@ -131,8 +131,8 @@ button:disabled {
 }
 
 .squad {
-  border: 1px solid #3b5244;
-  background: rgba(14, 20, 16, 0.86);
+  border: 1px solid #444e5c;
+  background: rgba(16, 21, 28, 0.92);
   border-radius: 10px;
   padding: 12px;
   margin-bottom: 10px;
@@ -171,9 +171,15 @@ button:disabled {
   justify-content: space-between;
   gap: 8px;
   padding: 9px 11px;
-  border: 1px solid #395143;
+  border: 1px solid #495463;
   border-radius: 8px;
-  background: rgba(12, 18, 14, 0.8);
+  background: rgba(17, 22, 30, 0.84);
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px dashed #8994a2;
+  color: #c8d1da;
 }
 
 .error {

@@ -12,6 +12,7 @@ function App() {
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
 
   const [newOperationName, setNewOperationName] = useState("");
   const [newSquadName, setNewSquadName] = useState("");
@@ -263,6 +264,14 @@ function App() {
             placeholder="New operation name"
           />
           <button onClick={createOperation} disabled={!permissions?.is_admin}>Create Operation</button>
+          <button
+            type="button"
+            className="ghost-btn"
+            onClick={() => setShowAdminPanel((v) => !v)}
+            disabled={!guildId.trim()}
+          >
+            {showAdminPanel ? "Hide Admins" : "Manage Admins"}
+          </button>
         </div>
 
         {operation && permissions?.is_admin && (
@@ -287,13 +296,16 @@ function App() {
         )}
       </section>
 
-      {permissions?.is_admin && (
+      {showAdminPanel && (
         <section className="panel">
           <h2>Portal Admin Access</h2>
+          {!permissions?.is_admin && (
+            <p className="access-note">You need admin rights in this guild to modify portal admins.</p>
+          )}
           <div className="row">
             <input value={newAdminUserId} onChange={(e) => setNewAdminUserId(e.target.value)} placeholder="Discord User ID" />
             <input value={newAdminUsername} onChange={(e) => setNewAdminUsername(e.target.value)} placeholder="Display name (optional)" />
-            <button onClick={addAdmin}>Add Admin</button>
+            <button onClick={addAdmin} disabled={!permissions?.is_admin}>Add Admin</button>
           </div>
           <div className="admin-list">
             {admins.length === 0 && <p>No portal admins configured yet.</p>}
@@ -302,7 +314,7 @@ function App() {
                 <span>
                   {admin.username || "Unknown"} ({admin.user_id})
                 </span>
-                <button onClick={() => removeAdmin(admin.user_id)}>Remove</button>
+                <button onClick={() => removeAdmin(admin.user_id)} disabled={!permissions?.is_admin}>Remove</button>
               </div>
             ))}
           </div>
