@@ -26,6 +26,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
 
   const [newOperationName, setNewOperationName] = useState("");
   const [renameOperationName, setRenameOperationName] = useState("");
@@ -261,6 +262,12 @@ function App() {
     if (selectedGuildId === guildId && permissions) return;
     void loadGuildContext(selectedGuildId);
   }, [selectedGuildId]);
+
+  useEffect(() => {
+    if (!permissions?.is_admin) {
+      setAdminOverlayEnabled(false);
+    }
+  }, [permissions?.is_admin]);
 
   useEffect(() => {
     if (!operation) return;
@@ -679,6 +686,15 @@ function App() {
           <p className="subtitle">{status}</p>
         </div>
         <div className="row">
+          {permissions?.is_admin ? (
+            <button
+              type="button"
+              className={adminOverlayEnabled ? "ghost-btn" : ""}
+              onClick={() => setAdminOverlayEnabled((v) => !v)}
+            >
+              {adminOverlayEnabled ? "Normal View" : "Admin Overlay"}
+            </button>
+          ) : null}
           <button onClick={logout}>Logout ({session.username})</button>
         </div>
       </header>
@@ -706,6 +722,7 @@ function App() {
         )}
       </section>
 
+      {adminOverlayEnabled && permissions?.is_admin ? (
       <section className="panel">
         <h2>Admin Builder</h2>
         {!permissions?.is_admin && <p className="access-note">Admin access required.</p>}
@@ -770,6 +787,7 @@ function App() {
           </>
         )}
       </section>
+      ) : null}
 
       <section className="panel">
         <h2>Live ORBAT</h2>
@@ -780,7 +798,7 @@ function App() {
               {SQUAD_LANES.map((lane) => (
                 <div key={lane} className="lane-column">
                   <div className="lane-header">{laneLabel(lane)}</div>
-                  {permissions?.is_admin && (
+                  {adminOverlayEnabled && permissions?.is_admin && (
                     <div
                       className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
                       onDragOver={(e) => e.preventDefault()}
@@ -794,7 +812,7 @@ function App() {
                   )}
                   {squadsByLane[lane].map((squad, idx) => (
                     <div key={squad.id}>
-                      {permissions?.is_admin && (
+                      {adminOverlayEnabled && permissions?.is_admin && (
                         <div
                           className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
                           onDragOver={(e) => e.preventDefault()}
@@ -808,7 +826,7 @@ function App() {
                       )}
                       <div
                         className="squad"
-                        draggable={Boolean(permissions?.is_admin)}
+                        draggable={Boolean(adminOverlayEnabled && permissions?.is_admin)}
                         onDragStart={() => onSquadDragStart(squad.id)}
                         onDragEnd={onSquadDragEnd}
                       >
@@ -832,7 +850,7 @@ function App() {
                           ) : (
                             <h3>{squad.name}</h3>
                           )}
-                          {permissions?.is_admin && (
+                          {adminOverlayEnabled && permissions?.is_admin && (
                             <div className="squad-actions">
                               <button className="ghost-btn" onClick={() => moveSquad(squad, "up")}>Up</button>
                               <button className="ghost-btn" onClick={() => moveSquad(squad, "down")}>Down</button>
@@ -885,6 +903,7 @@ function App() {
                                       </button>
                                     ) : null}
                                     {slot.assigned_to_member_id &&
+                                    adminOverlayEnabled &&
                                     permissions?.is_admin &&
                                     (!session || slot.assigned_to_member_id !== session.user_id) ? (
                                       <button className="ghost-btn" onClick={() => releaseSlot(slot.id)}>
@@ -896,7 +915,7 @@ function App() {
                                         {session ? "Request" : "Login required"}
                                       </button>
                                     )}
-                                    {permissions?.is_admin && (
+                                    {adminOverlayEnabled && permissions?.is_admin && (
                                       <div className="reorder-controls">
                                         <button
                                           className="ghost-btn arrow-btn"
@@ -929,7 +948,7 @@ function App() {
                       </div>
                     </div>
                   ))}
-                  {permissions?.is_admin && (
+                  {adminOverlayEnabled && permissions?.is_admin && (
                     <div
                       className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
                       onDragOver={(e) => e.preventDefault()}
