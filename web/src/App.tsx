@@ -50,6 +50,7 @@ function App() {
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
@@ -286,6 +287,7 @@ function App() {
   }, []);
 
   useEffect(() => {
+    setSessionChecked(false);
     let cancelled = false;
     (async () => {
       try {
@@ -297,6 +299,9 @@ function App() {
         if (cancelled) return;
         setSession(null);
         setStatus("Disconnected");
+      } finally {
+        if (cancelled) return;
+        setSessionChecked(true);
       }
     })();
     return () => {
@@ -320,6 +325,9 @@ function App() {
   }, [session]);
 
   useEffect(() => {
+    if (!sessionChecked) {
+      return;
+    }
     if (!session && route !== "login") {
       window.location.hash = "#/login";
       return;
@@ -327,7 +335,7 @@ function App() {
     if (session && route !== "app") {
       window.location.hash = "#/app";
     }
-  }, [session, route]);
+  }, [session, route, sessionChecked]);
 
   useEffect(() => {
     if (!selectedGuildId) return;
