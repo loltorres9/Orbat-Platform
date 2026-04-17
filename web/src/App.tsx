@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, discordLoginUrl, openOperationSocket, setSessionToken } from "./api";
-import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, Squad, WebAdminEntry } from "./types";
+import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, Slot, Squad, WebAdminEntry } from "./types";
 
 function App() {
   const basePath = import.meta.env.BASE_URL || "/";
@@ -30,6 +30,8 @@ function App() {
   const [newAdminUsername, setNewAdminUsername] = useState("");
   const [editingSquadId, setEditingSquadId] = useState<number | null>(null);
   const [editingSquadName, setEditingSquadName] = useState("");
+  const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
+  const [editingSlotName, setEditingSlotName] = useState("");
 
   function extractSessionTokenFromHash(): string | null {
     const hash = window.location.hash || "";
@@ -371,6 +373,48 @@ function App() {
     }
   }
 
+  function beginEditSlot(slot: Slot) {
+    setEditingSlotId(slot.id);
+    setEditingSlotName(slot.role_name);
+  }
+
+  function cancelEditSlot() {
+    setEditingSlotId(null);
+    setEditingSlotName("");
+  }
+
+  async function saveEditSlot() {
+    if (!editingSlotId || !operation || !permissions?.is_admin) return;
+    if (!editingSlotName.trim()) {
+      setError("Role name cannot be empty.");
+      return;
+    }
+    try {
+      await api.updateSlot(editingSlotId, { role_name: editingSlotName.trim() });
+      await reloadOperation(operation.id);
+      cancelEditSlot();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function moveSlot(squad: Squad, slot: Slot, direction: "up" | "down") {
+    if (!operation || !permissions?.is_admin) return;
+    const ordered = [...squad.slots].sort((a, b) => a.display_order - b.display_order);
+    const idx = ordered.findIndex((s) => s.id === slot.id);
+    if (idx < 0) return;
+    const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= ordered.length) return;
+    const other = ordered[swapIdx];
+    try {
+      await api.updateSlot(slot.id, { display_order: other.display_order });
+      await api.updateSlot(other.id, { display_order: slot.display_order });
+      await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function addAdmin() {
     if (!guildId.trim() || !permissions?.is_admin) return;
     if (!newAdminUserId.trim()) {
@@ -530,7 +574,21 @@ function App() {
                   {squad.slots.map((slot) => (
                     <li key={slot.id}>
                       <span>
-                        {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                        {editingSlotId === slot.id ? (
+                          <span className="row compact-row">
+                            <input
+                              value={editingSlotName}
+                              onChange={(e) => setEditingSlotName(e.target.value)}
+                              placeholder="Role name"
+                            />
+                            <button onClick={saveEditSlot}>Save</button>
+                            <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
+                          </span>
+                        ) : (
+                          <>
+                            {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                          </>
+                        )}
                       </span>
                       <div className="slot-actions">
                         {!slot.assigned_to_member_name && (
@@ -539,9 +597,14 @@ function App() {
                           </button>
                         )}
                         {permissions?.is_admin && (
-                          <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
-                            Delete Role
-                          </button>
+                          <>
+                            <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
+                            <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
+                            <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
+                            <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
+                              Delete Role
+                            </button>
+                          </>
                         )}
                       </div>
                     </li>
