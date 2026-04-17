@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, discordLoginUrl, openOperationSocket, setSessionToken } from "./api";
 import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, Slot, Squad, WebAdminEntry } from "./types";
 
@@ -87,13 +87,19 @@ function App() {
   const [laneNameLeft, setLaneNameLeft] = useState("Left Wing");
   const [laneNameCenter, setLaneNameCenter] = useState("Center");
   const [laneNameRight, setLaneNameRight] = useState("Right Wing");
+  const reloadInFlightRef = useRef<Promise<void> | null>(null);
+  const queuedReloadOperationIdRef = useRef<number | null>(null);
+  const wsReloadTimerRef = useRef<number | null>(null);
 
   function extractSessionTokenFromLocation(): string | null {
     const href = window.location.href || "";
     const tokenMatch = href.match(/[?#&]orbat_session=([^&#]+)/i);
     if (!tokenMatch?.[1]) return null;
-
-    return decodeURIComponent(tokenMatch[1]);
+    try {
+      return decodeURIComponent(tokenMatch[1]);
+    } catch {
+      return tokenMatch[1];
+    }
   }
 
   function scrubSessionTokenFromLocation() {
@@ -212,6 +218,29 @@ function App() {
     syncLaneNameState(structure.operation);
   }
 
+  async function refreshOperation(operationId: number) {
+    queuedReloadOperationIdRef.current = operationId;
+    if (reloadInFlightRef.current) {
+      await reloadInFlightRef.current;
+      return;
+    }
+
+    const runner = (async () => {
+      while (queuedReloadOperationIdRef.current != null) {
+        const nextOperationId = queuedReloadOperationIdRef.current;
+        queuedReloadOperationIdRef.current = null;
+        await reloadOperation(nextOperationId);
+      }
+    })();
+
+    reloadInFlightRef.current = runner;
+    try {
+      await runner;
+    } finally {
+      reloadInFlightRef.current = null;
+    }
+  }
+
   function laneBuckets(source: Squad[]) {
     const buckets: Record<number, Squad[]> = { 0: [], 1: [], 2: [] };
     for (const sq of source) {
@@ -250,7 +279,7 @@ function App() {
     }
     if (updates.length === 0) return;
     await Promise.all(updates);
-    await reloadOperation(operation.id);
+    await refreshOperation(operation.id);
   }
 
   useEffect(() => {
@@ -298,10 +327,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!sessionChecked || sessionTokenScrubbed) return;
+    // Keep token in URL until we actually established a valid session.
+    // This avoids permanent logout loops when first bootstrap request fails transiently.
+    if (!sessionChecked || sessionTokenScrubbed || !session) return;
     scrubSessionTokenFromLocation();
     setSessionTokenScrubbed(true);
-  }, [sessionChecked, sessionTokenScrubbed]);
+  }, [sessionChecked, sessionTokenScrubbed, session]);
 
   useEffect(() => {
     setSessionChecked(false);
@@ -369,16 +400,29 @@ function App() {
 
   useEffect(() => {
     if (!operation) return;
-    const ws = openOperationSocket(operation.id, async () => {
-      try {
-        await reloadOperation(operation.id);
-      } catch {
-        // no-op
+    const ws = openOperationSocket(operation.id, async (data) => {
+      // Ignore heartbeat-style connected payloads and coalesce burst updates.
+      if (data && typeof data === "object" && (data as { event?: string }).event === "connected") {
+        return;
       }
+      if (wsReloadTimerRef.current != null) {
+        window.clearTimeout(wsReloadTimerRef.current);
+      }
+      wsReloadTimerRef.current = window.setTimeout(() => {
+        void refreshOperation(operation.id).catch(() => {
+          // no-op
+        });
+      }, 120);
     });
     ws.onopen = () => setStatus("Realtime connected");
     ws.onclose = () => setStatus("Realtime disconnected");
-    return () => ws.close();
+    return () => {
+      ws.close();
+      if (wsReloadTimerRef.current != null) {
+        window.clearTimeout(wsReloadTimerRef.current);
+        wsReloadTimerRef.current = null;
+      }
+    };
   }, [operation?.id]);
 
   useEffect(() => {
@@ -425,7 +469,7 @@ function App() {
     }
     try {
       await api.requestSlot(slotId, guildId);
-      if (operation) await reloadOperation(operation.id);
+      if (operation) await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -438,7 +482,7 @@ function App() {
     }
     try {
       await api.releaseSlot(slotId);
-      if (operation) await reloadOperation(operation.id);
+      if (operation) await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -489,7 +533,7 @@ function App() {
         reminder_minutes: newOperationReminderMinutes,
         activate: true
       });
-      await reloadOperation(op.id);
+      await refreshOperation(op.id);
       setNewOperationName("");
       setNewOperationEventTime("");
       setNewOperationReminderMinutes(30);
@@ -506,7 +550,7 @@ function App() {
         reminder_minutes: scheduleReminderMinutes,
       });
       setOperation(updated);
-      await reloadOperation(updated.id);
+      await refreshOperation(updated.id);
     } catch (err) {
       setError(String(err));
     }
@@ -544,7 +588,7 @@ function App() {
         name_override: importNameOverride.trim() || undefined,
         activate: importActivate,
       });
-      await reloadOperation(created.id);
+      await refreshOperation(created.id);
       setStatus(`Imported operation loaded: ${created.name}`);
       setImportJsonText("");
       setImportNameOverride("");
@@ -582,7 +626,7 @@ function App() {
     }
     try {
       const copied = await api.copyOperation(operation.id, { name, activate: false });
-      await reloadOperation(copied.id);
+      await refreshOperation(copied.id);
       setStatus(`Copied operation loaded: ${copied.name}`);
     } catch (err) {
       setError(String(err));
@@ -597,7 +641,7 @@ function App() {
         column_index: 1,
         notes: newSquadNotes.trim() || null,
       });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
       setNewSquadName("");
       setNewSquadNotes("");
     } catch (err) {
@@ -613,7 +657,7 @@ function App() {
         lane_name_center: laneNameCenter.trim() || defaultLaneLabel(1),
         lane_name_right: laneNameRight.trim() || defaultLaneLabel(2),
       });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -623,7 +667,7 @@ function App() {
     if (!operation || !permissions?.is_admin) return;
     try {
       await api.deleteSquad(squadId);
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -652,7 +696,7 @@ function App() {
         name: editingSquadName.trim(),
         notes: editingSquadNotes.trim() || null,
       });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
       cancelEditSquad();
     } catch (err) {
       setError(String(err));
@@ -673,7 +717,7 @@ function App() {
     try {
       await api.updateSquad(squad.id, { display_order: other.display_order });
       await api.updateSquad(other.id, { display_order: squad.display_order });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -720,15 +764,17 @@ function App() {
         column_index: squad.column_index,
         notes: squad.notes || null,
       });
-      for (const slot of squad.slots) {
-        await api.addSlot(operation.id, {
+      await Promise.all(
+        squad.slots.map((slot) =>
+          api.addSlot(operation.id, {
           squad_id: created.id,
           role_name: slot.role_name,
           display_order: slot.display_order,
           team: slot.team || null,
-        });
-      }
-      await reloadOperation(operation.id);
+          })
+        )
+      );
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -742,7 +788,7 @@ function App() {
         role_name: newSlotRole.trim(),
         team: newSlotTeam || null,
       });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
       setNewSlotRole("");
       setNewSlotTeam("");
     } catch (err) {
@@ -754,7 +800,7 @@ function App() {
     if (!operation || !permissions?.is_admin) return;
     try {
       await api.deleteSlot(slotId);
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -783,7 +829,7 @@ function App() {
         role_name: editingSlotName.trim(),
         team: editingSlotTeam || null,
       });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
       cancelEditSlot();
     } catch (err) {
       setError(String(err));
@@ -801,7 +847,7 @@ function App() {
     try {
       await api.updateSlot(slot.id, { display_order: other.display_order });
       await api.updateSlot(other.id, { display_order: slot.display_order });
-      await reloadOperation(operation.id);
+      await refreshOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -837,6 +883,17 @@ function App() {
   }
 
   const squadsByLane = laneBuckets(orbat?.squads ?? []);
+
+  if (!sessionChecked) {
+    return (
+      <div className="page">
+        <section className="panel login-panel">
+          <h1>ORBAT Platform</h1>
+          <p className="access-note">Connecting...</p>
+        </section>
+      </div>
+    );
+  }
 
   if (!session) {
     return (
