@@ -252,7 +252,12 @@ async def get_member_active_request(guild_id: str, operation_id: int, member_id:
         return await db.fetchrow(
             """SELECT * FROM requests
                WHERE guild_id = $1 AND operation_id = $2 AND member_id = $3
-               AND status IN ('pending', 'approved')""",
+               AND status IN ('pending', 'approved')
+               ORDER BY
+                 CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+                 updated_at DESC,
+                 id DESC
+               LIMIT 1""",
             guild_id, operation_id, member_id,
         )
 
@@ -373,6 +378,34 @@ async def deny_request(request_id: int, denied_by: str, reason: str = None):
                SET status = 'denied', approved_by = $1, denial_reason = $2, updated_at = CURRENT_TIMESTAMP
                WHERE id = $3""",
             denied_by, reason, request_id,
+        )
+
+
+async def deny_pending_requests_for_slot(
+    operation_id: int,
+    slot_id: int,
+    denied_by: str,
+    reason: str,
+    exclude_request_id: Optional[int] = None,
+) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """UPDATE requests
+               SET status = 'denied',
+                   approved_by = $1,
+                   denial_reason = $2,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE operation_id = $3
+                 AND slot_id = $4
+                 AND status = 'pending'
+                 AND ($5::int IS NULL OR id <> $5)
+               RETURNING *""",
+            denied_by,
+            reason,
+            operation_id,
+            slot_id,
+            exclude_request_id,
         )
 
 

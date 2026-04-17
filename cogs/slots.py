@@ -464,16 +464,69 @@ class ApprovalApproveButton(discord.ui.Button):
                 await interaction.response.send_message("Slot not found anymore.", ephemeral=True)
                 return
             if slot.get("assigned_to_member_id"):
-                await interaction.response.send_message("Slot already assigned.", ephemeral=True)
+                assigned_to_member_id = str(slot.get("assigned_to_member_id"))
+                if assigned_to_member_id == str(req["member_id"]):
+                    await database.approve_request(view.request_id, interaction.user.display_name)
+                    await _archive_and_delete_request_message(interaction, req, approved=True)
+                    await interaction.response.send_message(
+                        "Slot was already assigned to this member. Request marked approved and archived.",
+                        ephemeral=True,
+                    )
+                    await database.emit_slot_update(
+                        str(interaction.guild.id),
+                        req["operation_id"],
+                        "request_approved",
+                        slot_id,
+                    )
+                    op = await database.get_operation_by_id(req["operation_id"])
+                    if op:
+                        asyncio.create_task(_update_orbat(view.bot, interaction.guild, op))
+                    return
+
+                reason = "Another member was approved first."
+                await database.deny_request(view.request_id, interaction.user.display_name, reason)
+                await _archive_and_delete_request_message(interaction, req, approved=False, reason=reason)
+                await interaction.response.send_message(
+                    "Slot already assigned. This request was auto-denied and archived.",
+                    ephemeral=True,
+                )
+                try:
+                    member = await interaction.guild.fetch_member(int(req["member_id"]))
+                    await member.send(
+                        f"Your request for **{req['slot_label']}** was denied because another member was approved first."
+                    )
+                except (discord.Forbidden, discord.NotFound):
+                    pass
+                await database.emit_slot_update(
+                    str(interaction.guild.id),
+                    req["operation_id"],
+                    "request_denied",
+                    slot_id,
+                )
+                op = await database.get_operation_by_id(req["operation_id"])
+                if op:
+                    asyncio.create_task(_update_orbat(view.bot, interaction.guild, op))
                 return
             await database.assign_slot(slot_id, req["member_id"], req["member_name"])
 
         await database.approve_request(view.request_id, interaction.user.display_name)
 
+        denied_competitors = []
         if slot_id:
-            competing = await database.get_competing_requests_by_slot(req["operation_id"], slot_id, view.request_id)
-            for competitor in competing:
-                await database.deny_request(competitor["id"], interaction.user.display_name, "Another member was approved first.")
+            denied_competitors = await database.deny_pending_requests_for_slot(
+                operation_id=req["operation_id"],
+                slot_id=slot_id,
+                denied_by=interaction.user.display_name,
+                reason="Another member was approved first.",
+                exclude_request_id=view.request_id,
+            )
+            for competitor in denied_competitors:
+                await _archive_and_delete_request_message(
+                    interaction,
+                    competitor,
+                    approved=False,
+                    reason="Another member was approved first.",
+                )
                 try:
                     member = await interaction.guild.fetch_member(int(competitor["member_id"]))
                     await member.send(

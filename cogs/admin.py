@@ -9,6 +9,7 @@ from cogs.slots import (
     APPROVAL_ARCHIVE_CHANNEL_NAME,
     APPROVAL_CHANNEL_NAME,
     SquadSelectView,
+    _archive_and_delete_request_message,
     _build_slots_state,
     _get_unit_role,
     _update_orbat,
@@ -356,6 +357,13 @@ class AdminCog(commands.Cog):
                 unit_role=_get_unit_role(member),
             )
             await database.approve_request(request_id, sel_interaction.user.display_name)
+            denied_competitors = await database.deny_pending_requests_for_slot(
+                operation_id=op["id"],
+                slot_id=slot["id"],
+                denied_by=sel_interaction.user.display_name,
+                reason="Another member was approved first.",
+                exclude_request_id=request_id,
+            )
             await database.emit_slot_update(str(sel_interaction.guild_id), op["id"], "slot_assigned", slot["id"])
 
             await sel_interaction.response.send_message(
@@ -368,6 +376,21 @@ class AdminCog(commands.Cog):
                 )
             except (discord.Forbidden, discord.NotFound):
                 pass
+
+            for competitor in denied_competitors:
+                await _archive_and_delete_request_message(
+                    sel_interaction,
+                    competitor,
+                    approved=False,
+                    reason="Another member was approved first.",
+                )
+                try:
+                    competitor_member = await sel_interaction.guild.fetch_member(int(competitor["member_id"]))
+                    await competitor_member.send(
+                        f"Your request for **{competitor['slot_label']}** was denied because another member was approved first."
+                    )
+                except (discord.Forbidden, discord.NotFound):
+                    pass
             await _update_orbat(self.bot, sel_interaction.guild, op)
 
         view = SquadSelectView(
