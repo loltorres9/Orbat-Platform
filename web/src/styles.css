@@ -111,6 +111,31 @@ body {
   margin-bottom: 10px;
 }
 
+.admin-head-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.admin-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+
+.action-btn {
+  width: 100%;
+  min-width: 0;
+}
+
 .login-panel {
   max-width: 520px;
   margin: 70px auto 0;
@@ -428,6 +453,11 @@ button:disabled {
 
   .row {
     flex-direction: column;
+  }
+
+  .admin-grid-4,
+  .admin-grid-3 {
+    grid-template-columns: 1fr;
   }
 
   input,
