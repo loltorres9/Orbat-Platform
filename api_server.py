@@ -155,7 +155,15 @@ async def _discord_oauth_exchange(code: str) -> tuple[dict, dict]:
             headers=headers,
         )
         if token_response.status_code >= 400:
-            raise HTTPException(status_code=401, detail="Failed to exchange Discord OAuth code.")
+            reason = "Discord token exchange failed"
+            try:
+                payload = token_response.json()
+                reason = payload.get("error_description") or payload.get("error") or reason
+            except Exception:
+                text = (token_response.text or "").strip()
+                if text:
+                    reason = text[:200]
+            raise HTTPException(status_code=401, detail=f"Failed to exchange Discord OAuth code: {reason}")
         token_data = token_response.json()
 
         user_response = await client.get(

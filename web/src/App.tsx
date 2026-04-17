@@ -360,15 +360,6 @@ function App() {
 
   function startDiscordLogin() {
     const loginUrl = discordLoginUrl(undefined, buildAppHashUrl());
-    if (isEmbedded) {
-      const popup = window.open(loginUrl, "_blank", "noopener,noreferrer");
-      if (!popup) {
-        setError("Popup was blocked. Use the 'Open Login in New Tab' link below.");
-      } else {
-        setError("Complete Discord login in the new tab, then return here and refresh.");
-      }
-      return;
-    }
     window.location.href = loginUrl;
   }
 
@@ -689,9 +680,6 @@ function App() {
           <h1>ORBAT Platform</h1>
           <div className="login-stack">
             <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
-            <button type="button" className="button-link" onClick={startDiscordLogin}>
-              Login with Discord
-            </button>
             {isEmbedded ? (
               <>
                 <p className="access-note">
@@ -703,18 +691,14 @@ function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  Open Login in New Tab
-                </a>
-                <a
-                  className="button-link ghost-btn"
-                  href={buildAppHashUrl()}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Open ORBAT in New Tab
+                  Login with Discord
                 </a>
               </>
-            ) : null}
+            ) : (
+              <button type="button" className="button-link" onClick={startDiscordLogin}>
+                Login with Discord
+              </button>
+            )}
             {error && <p className="error">{error}</p>}
           </div>
         </section>
