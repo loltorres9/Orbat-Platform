@@ -86,6 +86,7 @@ body {
 .admin-sections {
   display: grid;
   gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .admin-section {
@@ -93,6 +94,11 @@ body {
   border-radius: 12px;
   padding: 12px;
   background: rgba(36, 36, 36, 0.45);
+  min-width: 0;
+}
+
+.admin-section--full {
+  grid-column: 1 / -1;
 }
 
 .admin-section h3 {
@@ -117,23 +123,29 @@ body {
   flex-wrap: wrap;
 }
 
-.admin-grid-4 {
+.row.admin-grid-4 {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(220px, 1.45fr) auto minmax(220px, 1.45fr) auto;
   gap: 10px;
-  align-items: stretch;
+  align-items: center;
 }
 
-.admin-grid-3 {
+.row.admin-grid-3 {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
   gap: 10px;
-  align-items: stretch;
+  align-items: center;
 }
 
 .action-btn {
-  width: 100%;
-  min-width: 0;
+  width: auto !important;
+  min-width: 170px;
+  max-width: max-content;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
 }
 
 .login-panel {
@@ -165,6 +177,11 @@ body {
   gap: 10px;
   flex-wrap: wrap;
   margin-bottom: 10px;
+}
+
+.row.admin-grid-4 > *,
+.row.admin-grid-3 > * {
+  min-width: 0;
 }
 
 .compact-row {
@@ -453,6 +470,10 @@ button:disabled {
 
   .row {
     flex-direction: column;
+  }
+
+  .admin-sections {
+    grid-template-columns: 1fr;
   }
 
   .admin-grid-4,

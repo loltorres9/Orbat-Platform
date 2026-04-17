@@ -50,6 +50,7 @@ function App() {
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
   const [showCreateOperationPanel, setShowCreateOperationPanel] = useState(false);
@@ -82,16 +83,36 @@ function App() {
   const [laneNameCenter, setLaneNameCenter] = useState("Center");
   const [laneNameRight, setLaneNameRight] = useState("Right Wing");
 
-  function extractSessionTokenFromHash(): string | null {
-    const hash = window.location.hash || "";
-    const queryIndex = hash.indexOf("?");
-    if (queryIndex < 0) return null;
-    const queryPart = hash.slice(queryIndex + 1);
-    const params = new URLSearchParams(queryPart);
-    const token = params.get("orbat_session");
-    if (!token) return null;
-    const routePart = hash.slice(0, queryIndex);
-    window.location.hash = routePart;
+  function extractSessionTokenFromLocation(): string | null {
+    const href = window.location.href || "";
+    const tokenMatch = href.match(/[?#&]orbat_session=([^&#]+)/i);
+    if (!tokenMatch?.[1]) return null;
+
+    const token = decodeURIComponent(tokenMatch[1]);
+    const url = new URL(window.location.href);
+
+    // Strip token from normal query.
+    if (url.searchParams.has("orbat_session")) {
+      url.searchParams.delete("orbat_session");
+    }
+
+    // Strip token from hash fragment query-like payload.
+    if (url.hash) {
+      const hash = url.hash;
+      const qIndex = hash.indexOf("?");
+      if (qIndex >= 0) {
+        const routePart = hash.slice(0, qIndex);
+        const params = new URLSearchParams(hash.slice(qIndex + 1));
+        params.delete("orbat_session");
+        const rest = params.toString();
+        url.hash = rest ? `${routePart}?${rest}` : routePart;
+      } else {
+        // Handle malformed fragment patterns like #/app&orbat_session=...
+        url.hash = hash.replace(/([&?])orbat_session=[^&?#]*/i, "").replace(/[?&]$/, "");
+      }
+    }
+
+    window.history.replaceState({}, "", url.toString());
     return token;
   }
 
@@ -232,9 +253,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const token = extractSessionTokenFromHash();
+    const token = extractSessionTokenFromLocation();
     if (token) {
       setSessionToken(token);
+      if (!window.location.hash.startsWith("#/app")) {
+        window.location.hash = "#/app";
+      }
+      setSessionReloadKey((v) => v + 1);
     }
 
     const url = new URL(window.location.href);
@@ -244,6 +269,20 @@ function App() {
       url.searchParams.delete("auth_error");
       window.history.replaceState({}, "", url.toString());
     }
+  }, []);
+
+  useEffect(() => {
+    const onHashToken = () => {
+      const token = extractSessionTokenFromLocation();
+      if (!token) return;
+      setSessionToken(token);
+      if (!window.location.hash.startsWith("#/app")) {
+        window.location.hash = "#/app";
+      }
+      setSessionReloadKey((v) => v + 1);
+    };
+    window.addEventListener("hashchange", onHashToken);
+    return () => window.removeEventListener("hashchange", onHashToken);
   }, []);
 
   useEffect(() => {
@@ -263,7 +302,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sessionReloadKey]);
 
   useEffect(() => {
     if (!session) return;
@@ -860,7 +899,7 @@ function App() {
         <h2>Admin Builder</h2>
         {!permissions?.is_admin && <p className="access-note">Admin access required.</p>}
         <div className="admin-sections">
-          <div className="admin-section">
+          <div className="admin-section admin-section--full">
             <div className="admin-section-head">
               <h3>Operations</h3>
               <div className="admin-head-actions">
@@ -982,7 +1021,7 @@ function App() {
                 </div>
               </div>
 
-              <div className="admin-section">
+              <div className="admin-section admin-section--full">
                 <h3>Squads & Roles</h3>
                 <div className="row admin-grid-3">
                   <input value={newSquadName} onChange={(e) => setNewSquadName(e.target.value)} placeholder="Squad name" />
