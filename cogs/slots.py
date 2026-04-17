@@ -7,7 +7,8 @@ from discord.ext import commands
 
 from utils import database
 
-APPROVAL_CHANNEL_NAME = "slot-approvals"
+APPROVAL_CHANNEL_NAME = "slot-approval-dev"
+APPROVAL_ARCHIVE_CHANNEL_NAME = "approval-archive-dev"
 UNIT_ROLES = {"2nd USC", "CNTO", "PXG", "TFP", "SKUA"}
 
 

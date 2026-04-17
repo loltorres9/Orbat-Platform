@@ -6,6 +6,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from cogs.slots import (
+    APPROVAL_ARCHIVE_CHANNEL_NAME,
+    APPROVAL_CHANNEL_NAME,
     SquadSelectView,
     _build_slots_state,
     _get_unit_role,
@@ -425,13 +427,13 @@ class AdminCog(commands.Cog):
     @app_commands.default_permissions(manage_guild=True)
     async def archive_old_approvals(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        approvals_channel = discord.utils.get(interaction.guild.text_channels, name="slot-approvals")
+        approvals_channel = discord.utils.get(interaction.guild.text_channels, name=APPROVAL_CHANNEL_NAME)
         if not approvals_channel:
-            await interaction.followup.send("No #slot-approvals channel found.", ephemeral=True)
+            await interaction.followup.send(f"No #{APPROVAL_CHANNEL_NAME} channel found.", ephemeral=True)
             return
-        archive_channel = discord.utils.get(interaction.guild.text_channels, name="approval-archive")
+        archive_channel = discord.utils.get(interaction.guild.text_channels, name=APPROVAL_ARCHIVE_CHANNEL_NAME)
         if archive_channel is None:
-            archive_channel = await interaction.guild.create_text_channel("approval-archive")
+            archive_channel = await interaction.guild.create_text_channel(APPROVAL_ARCHIVE_CHANNEL_NAME)
 
         moved = 0
         skipped = 0
