@@ -8,6 +8,18 @@ if (typeof window !== "undefined") {
   sessionToken = window.localStorage.getItem(SESSION_STORAGE_KEY);
 }
 
+function tokenFromCurrentLocation(): string | null {
+  if (typeof window === "undefined") return null;
+  const href = window.location.href || "";
+  const match = href.match(/[?#&]orbat_session=([^&#]+)/i);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 export function setSessionToken(token: string | null) {
   sessionToken = token;
   if (typeof window === "undefined") return;
@@ -23,8 +35,16 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string> | undefined) || {}),
   };
-  if (sessionToken) {
-    headers["X-Orbat-Session"] = sessionToken;
+  let effectiveToken = sessionToken;
+  if (!effectiveToken) {
+    const fromUrl = tokenFromCurrentLocation();
+    if (fromUrl) {
+      setSessionToken(fromUrl);
+      effectiveToken = fromUrl;
+    }
+  }
+  if (effectiveToken) {
+    headers["X-Orbat-Session"] = effectiveToken;
   }
   const url = `${API_BASE}${path}`;
   let res: Response;
