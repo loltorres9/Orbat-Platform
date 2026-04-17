@@ -25,8 +25,6 @@ jobs:
       BRANCH_NAME: ${{ github.ref_name }}
       API_MAIN: ${{ secrets.VITE_API_BASE_URL || vars.VITE_API_BASE_URL }}
       API_CODEX: ${{ secrets.VITE_API_BASE_URL_CODEX || vars.VITE_API_BASE_URL_CODEX }}
-      AUTH_RETURN_MAIN: ${{ secrets.VITE_AUTH_RETURN_TO_URL || vars.VITE_AUTH_RETURN_TO_URL }}
-      AUTH_RETURN_CODEX: ${{ secrets.VITE_AUTH_RETURN_TO_URL_CODEX || vars.VITE_AUTH_RETURN_TO_URL_CODEX }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +39,6 @@ jobs:
             echo "DEPLOY_SUBDIR=." >> "$GITHUB_ENV"
             echo "PUBLIC_BASE_PATH=/Orbat-Platform/" >> "$GITHUB_ENV"
             echo "VITE_API_BASE_URL=${API_MAIN}" >> "$GITHUB_ENV"
-            echo "VITE_AUTH_RETURN_TO_URL=${AUTH_RETURN_MAIN}" >> "$GITHUB_ENV"
             echo "SITE_URL=https://loltorres9.github.io/Orbat-Platform/" >> "$GITHUB_ENV"
           elif [[ "${BRANCH_NAME}" == "codex/working-2026-04-16" ]]; then
             echo "DEPLOY_SUBDIR=codex-working-2026-04-16" >> "$GITHUB_ENV"
@@ -50,11 +47,6 @@ jobs:
               echo "VITE_API_BASE_URL=${API_CODEX}" >> "$GITHUB_ENV"
             else
               echo "VITE_API_BASE_URL=${API_MAIN}" >> "$GITHUB_ENV"
-            fi
-            if [[ -n "${AUTH_RETURN_CODEX}" ]]; then
-              echo "VITE_AUTH_RETURN_TO_URL=${AUTH_RETURN_CODEX}" >> "$GITHUB_ENV"
-            else
-              echo "VITE_AUTH_RETURN_TO_URL=${AUTH_RETURN_MAIN}" >> "$GITHUB_ENV"
             fi
             echo "SITE_URL=https://loltorres9.github.io/Orbat-Platform/codex-working-2026-04-16/" >> "$GITHUB_ENV"
           else
@@ -79,11 +71,6 @@ jobs:
             echo "Missing VITE_API_BASE_URL for branch ${BRANCH_NAME}." >&2
             exit 1
           fi
-          if [[ -n "${VITE_AUTH_RETURN_TO_URL}" ]]; then
-            echo "AUTH_RETURN_TO_SET=true"
-          else
-            echo "AUTH_RETURN_TO_SET=false"
-          fi
 
       - name: Install dependencies
         shell: bash
@@ -99,7 +86,6 @@ jobs:
         env:
           VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
           VITE_PUBLIC_BASE_PATH: ${{ env.PUBLIC_BASE_PATH }}
-          VITE_AUTH_RETURN_TO_URL: ${{ env.VITE_AUTH_RETURN_TO_URL }}
 
       - name: Add nojekyll marker
         shell: bash
