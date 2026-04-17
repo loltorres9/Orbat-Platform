@@ -26,11 +26,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (sessionToken) {
     headers["X-Orbat-Session"] = sessionToken;
   }
-  const res = await fetch(`${API_BASE}${path}`, {
-    credentials: "include",
-    headers,
-    ...init
-  });
+  const url = `${API_BASE}${path}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      credentials: "include",
+      headers,
+      ...init
+    });
+  } catch (err) {
+    const details = err instanceof Error ? err.message : String(err);
+    throw new Error(`Network error while calling ${url}. ${details}`);
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Request failed (${res.status})`);

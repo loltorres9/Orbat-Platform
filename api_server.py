@@ -827,45 +827,52 @@ def create_api_app(bot) -> FastAPI:
         orbat_session: Optional[str] = Cookie(default=None),
         x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
     ):
-        session = await _session_from_token(orbat_session, x_orbat_session)
-        slot = await database.get_slot_by_id(slot_id)
-        if not slot:
-            raise HTTPException(status_code=404, detail="Slot not found.")
-        operation = await database.get_operation_by_id(slot["operation_id"])
-        if not operation:
-            raise HTTPException(status_code=404, detail="Operation not found.")
-        if str(operation["guild_id"]) != payload.guild_id:
-            raise HTTPException(status_code=400, detail="Slot does not belong to this guild.")
-
-        if slot["assigned_to_member_id"]:
-            raise HTTPException(status_code=409, detail="Slot is already assigned.")
-
-        existing = await database.get_member_active_request(
-            guild_id=payload.guild_id,
-            operation_id=slot["operation_id"],
-            member_id=session["user_id"],
-        )
-        if existing:
-            raise HTTPException(status_code=409, detail="You already have an active request.")
-
-        request_id = await database.create_request(
-            guild_id=payload.guild_id,
-            operation_id=slot["operation_id"],
-            slot_id=slot_id,
-            member_id=session["user_id"],
-            member_name=session["username"],
-            slot_label=f"{slot['squad_name']} - {slot['role_name']}",
-            unit_role=None,
-        )
-
         try:
-            await _post_approval_request(app, request_id, operation, slot, session["username"])
-        except Exception:
-            await database.deny_request(request_id, "system", reason="Approval message failed")
-            raise
+            session = await _session_from_token(orbat_session, x_orbat_session)
+            slot = await database.get_slot_by_id(slot_id)
+            if not slot:
+                raise HTTPException(status_code=404, detail="Slot not found.")
+            operation = await database.get_operation_by_id(slot["operation_id"])
+            if not operation:
+                raise HTTPException(status_code=404, detail="Operation not found.")
+            if str(operation["guild_id"]) != payload.guild_id:
+                raise HTTPException(status_code=400, detail="Slot does not belong to this guild.")
 
-        await database.emit_slot_update(payload.guild_id, slot["operation_id"], "request_created", slot_id)
-        return {"id": request_id, "status": "pending"}
+            if slot["assigned_to_member_id"]:
+                raise HTTPException(status_code=409, detail="Slot is already assigned.")
+
+            existing = await database.get_member_active_request(
+                guild_id=payload.guild_id,
+                operation_id=slot["operation_id"],
+                member_id=session["user_id"],
+            )
+            if existing:
+                raise HTTPException(status_code=409, detail="You already have an active request.")
+
+            request_id = await database.create_request(
+                guild_id=payload.guild_id,
+                operation_id=slot["operation_id"],
+                slot_id=slot_id,
+                member_id=session["user_id"],
+                member_name=session["username"],
+                slot_label=f"{slot['squad_name']} - {slot['role_name']}",
+                unit_role=None,
+            )
+
+            try:
+                await _post_approval_request(app, request_id, operation, slot, session["username"])
+            except Exception:
+                await database.deny_request(request_id, "system", reason="Approval message failed")
+                raise
+
+            await database.emit_slot_update(payload.guild_id, slot["operation_id"], "request_created", slot_id)
+            return {"id": request_id, "status": "pending"}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            print(f"request_slot unexpected error: {exc}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail="request_slot_failed")
 
     @app.websocket("/ws/operations/{operation_id}")
     async def ws_operation(websocket: WebSocket, operation_id: int):
