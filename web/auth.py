@@ -72,7 +72,7 @@ async def callback(code: str):
                  'permissions': g.get('permissions', '0')} for g in guilds],
     )
 
-    return RedirectResponse(f"{FRONTEND_URL}/auth/callback?session={session_id}")
+    return RedirectResponse(f"{FRONTEND_URL}/?session={session_id}")
 
 
 @router.get('/me')

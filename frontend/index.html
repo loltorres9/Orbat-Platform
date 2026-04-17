@@ -10,6 +10,17 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Handle OAuth session token before SPA loads
+      (function() {
+        var p = new URLSearchParams(window.location.search);
+        var s = p.get('session');
+        if (s) {
+          localStorage.setItem('session', s);
+          window.location.replace(window.location.pathname);
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
