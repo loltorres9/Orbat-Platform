@@ -13,9 +13,12 @@ def create_app(bot=None) -> FastAPI:
     app = FastAPI(title='ORBAT Platform API', version='1.0.0')
 
     frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+    from urllib.parse import urlparse
+    parsed = urlparse(frontend_url)
+    frontend_origin = f"{parsed.scheme}://{parsed.netloc}"
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[frontend_url, 'http://localhost:5173', 'http://localhost:4173'],
+        allow_origins=[frontend_origin, 'http://localhost:5173', 'http://localhost:4173'],
         allow_credentials=True,
         allow_methods=['*'],
         allow_headers=['*'],
