@@ -4,7 +4,7 @@ import json
 import os
 import secrets
 import traceback
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -162,6 +162,16 @@ def _deserialize_state(raw_state: Optional[str]) -> tuple[Optional[str], Optiona
         return guild_id, return_to
     except Exception:
         return None, None
+
+
+def _with_error_param(target_url: str, message: str) -> str:
+    try:
+        parsed = urlparse(target_url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query["auth_error"] = message
+        return urlunparse(parsed._replace(query=urlencode(query)))
+    except Exception:
+        return target_url
 
 
 async def _session_from_token(session_token: Optional[str]):
@@ -361,9 +371,19 @@ def create_api_app(bot) -> FastAPI:
     @app.get("/api/auth/discord/callback")
     async def auth_discord_callback(code: str, state: Optional[str] = None):
         guild_id, return_to = _deserialize_state(state)
-        redirect = RedirectResponse(url=return_to or "/", status_code=302)
-        await _create_session_from_discord(response=redirect, code=code, guild_id=guild_id)
-        return redirect
+        target = return_to or "/"
+        redirect = RedirectResponse(url=target, status_code=302)
+        try:
+            await _create_session_from_discord(response=redirect, code=code, guild_id=guild_id)
+            return redirect
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "oauth_http_error"
+            print(f"Discord callback HTTPException: {detail}")
+            return RedirectResponse(url=_with_error_param(target, detail), status_code=302)
+        except Exception as exc:
+            print(f"Discord callback failed: {exc}")
+            traceback.print_exc()
+            return RedirectResponse(url=_with_error_param(target, "oauth_callback_failed"), status_code=302)
 
     @app.post("/api/auth/discord/exchange")
     async def auth_exchange(payload: DiscordCodeInput, response: Response):

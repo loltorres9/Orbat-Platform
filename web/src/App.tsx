@@ -24,6 +24,16 @@ function App() {
   }
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const authError = url.searchParams.get("auth_error");
+    if (authError) {
+      setError(`Login failed: ${authError}`);
+      url.searchParams.delete("auth_error");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
