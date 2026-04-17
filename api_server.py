@@ -500,7 +500,6 @@ def create_api_app(bot) -> FastAPI:
                 "response_type": "code",
                 "scope": "identify guilds",
                 "state": _serialize_state(guild_id, return_to),
-                "prompt": "consent",
             }
         )
         return RedirectResponse(url=f"https://discord.com/oauth2/authorize?{params}", status_code=302)
