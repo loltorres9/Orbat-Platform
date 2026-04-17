@@ -250,6 +250,10 @@ async def _create_session_from_discord(
     # web_sessions.expires_at is TIMESTAMP WITHOUT TIME ZONE in Postgres.
     # Store naive UTC to avoid asyncpg aware/naive datetime encoding errors.
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).replace(tzinfo=None)
+    cookie_secure = os.getenv("COOKIE_SECURE", "true").lower() == "true"
+    cookie_samesite = os.getenv("COOKIE_SAMESITE", "none").lower()
+    if cookie_samesite not in {"lax", "strict", "none"}:
+        cookie_samesite = "none"
 
     await database.create_web_session(
         session_token=session_token,
@@ -266,8 +270,8 @@ async def _create_session_from_discord(
         key="orbat_session",
         value=session_token,
         httponly=True,
-        samesite="lax",
-        secure=os.getenv("COOKIE_SECURE", "true").lower() == "true",
+        samesite=cookie_samesite,
+        secure=cookie_secure,
         max_age=expires_in,
     )
     return user_data["id"]

@@ -50,6 +50,7 @@ API/OAuth (for web login):
 - `DISCORD_REDIRECT_URI`
 - `FRONTEND_ORIGINS` (comma-separated, default `*`)
 - `COOKIE_SECURE` (`true` in production)
+- `COOKIE_SAMESITE` (`none` recommended for GitHub Pages -> Railway cross-site auth)
 
 Runtime tuning:
 
