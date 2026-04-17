@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Link } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
 import { Login } from './pages/Login'
 import { AuthCallback } from './pages/AuthCallback'
@@ -16,7 +16,7 @@ export function App() {
   return (
     <div className="app">
       <nav className="navbar">
-        <a href="/" className="nav-brand">ORBAT Platform</a>
+        <Link to="/" className="nav-brand">ORBAT Platform</Link>
         <div className="nav-right">
           {user ? (
             <>
@@ -27,7 +27,7 @@ export function App() {
               <button onClick={logout} className="btn btn-sm">Logout</button>
             </>
           ) : (
-            <a href="/login" className="btn btn-primary btn-sm">Login with Discord</a>
+            <Link to="/login" className="btn btn-primary btn-sm">Login with Discord</Link>
           )}
         </div>
       </nav>

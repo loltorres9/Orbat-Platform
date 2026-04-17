@@ -22,7 +22,7 @@ export function Home({ user }: { user: User | null }) {
         <h1>ORBAT Platform</h1>
         <p>Arma 3 Operation Slot Management</p>
         <p className="hero-sub">Sign in with Discord to view operations and request slots.</p>
-        <a href="/login" className="btn btn-discord">Login with Discord</a>
+        <Link to="/login" className="btn btn-discord">Login with Discord</Link>
       </div>
     )
   }
