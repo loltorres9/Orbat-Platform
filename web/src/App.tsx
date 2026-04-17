@@ -1,9 +1,17 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, discordLoginUrl, openOperationSocket } from "./api";
-import type { GuildPermissions, Operation, OrbatStructure, Session, WebAdminEntry } from "./types";
+import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, WebAdminEntry } from "./types";
 
 function App() {
+  const basePath = import.meta.env.BASE_URL || "/";
+  const buildAppHashUrl = () =>
+    `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
+  const getRoute = () => (window.location.hash === "#/app" ? "app" : "login");
+
+  const [route, setRoute] = useState<"login" | "app">(getRoute());
   const [guildId, setGuildId] = useState("");
+  const [selectedGuildId, setSelectedGuildId] = useState("");
+  const [guilds, setGuilds] = useState<DiscordGuild[]>([]);
   const [operation, setOperation] = useState<Operation | null>(null);
   const [orbat, setOrbat] = useState<OrbatStructure | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -21,19 +29,7 @@ function App() {
   const [newAdminUserId, setNewAdminUserId] = useState("");
   const [newAdminUsername, setNewAdminUsername] = useState("");
 
-  async function loadActiveOperation(targetGuildId: string) {
-    const op = await api.activeOperation(targetGuildId);
-    setOperation(op);
-    const structure = await api.orbat(op.id);
-    setOrbat(structure);
-  }
-
   async function refreshGuildAccess(targetGuildId: string) {
-    if (!session) {
-      setPermissions(null);
-      setAdmins([]);
-      return;
-    }
     const perms = await api.guildPermissions(targetGuildId);
     setPermissions(perms);
     if (perms.is_admin) {
@@ -42,6 +38,68 @@ function App() {
       setAdmins([]);
     }
   }
+
+  function isNoActiveOperationError(err: unknown): boolean {
+    const text = String(err);
+    return text.includes("No active operation");
+  }
+
+  async function loadGuildContext(targetGuildId: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      await refreshGuildAccess(targetGuildId);
+      try {
+        const op = await api.activeOperation(targetGuildId);
+        setOperation(op);
+        setOrbat(await api.orbat(op.id));
+      } catch (err) {
+        if (isNoActiveOperationError(err)) {
+          setOperation(null);
+          setOrbat(null);
+        } else {
+          throw err;
+        }
+      }
+      setGuildId(targetGuildId);
+      setStatus("Guild loaded");
+    } catch (err) {
+      setError(String(err));
+      setOperation(null);
+      setOrbat(null);
+      setPermissions(null);
+      setAdmins([]);
+      setStatus("Failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshGuildList() {
+    const rows = await api.discordGuilds();
+    setGuilds(rows);
+    if (rows.length === 0) {
+      setSelectedGuildId("");
+      setGuildId("");
+      setPermissions(null);
+      setOperation(null);
+      setOrbat(null);
+      return;
+    }
+    const preferred = rows.find((g) => g.id === guildId) ?? rows[0];
+    setSelectedGuildId(preferred.id);
+  }
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(getRoute());
+    window.addEventListener("hashchange", onHashChange);
+    if (!window.location.hash) {
+      window.location.hash = "#/login";
+    } else {
+      onHashChange();
+    }
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -73,6 +131,37 @@ function App() {
   }, []);
 
   useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await refreshGuildList();
+      } catch (err) {
+        if (!cancelled) setError(String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (!session && route !== "login") {
+      window.location.hash = "#/login";
+      return;
+    }
+    if (session && route !== "app") {
+      window.location.hash = "#/app";
+    }
+  }, [session, route]);
+
+  useEffect(() => {
+    if (!selectedGuildId) return;
+    if (selectedGuildId === guildId && permissions) return;
+    void loadGuildContext(selectedGuildId);
+  }, [selectedGuildId]);
+
+  useEffect(() => {
     if (!operation) return;
     const ws = openOperationSocket(operation.id, async () => {
       try {
@@ -87,28 +176,13 @@ function App() {
     return () => ws.close();
   }, [operation?.id]);
 
-  async function onConnect(e: FormEvent) {
+  async function onSelectGuild(e: FormEvent) {
     e.preventDefault();
-    if (!guildId.trim()) {
-      setError("Please enter a Discord Guild ID.");
+    if (!selectedGuildId) {
+      setError("Please select a server.");
       return;
     }
-    setError(null);
-    setLoading(true);
-    try {
-      await loadActiveOperation(guildId.trim());
-      await refreshGuildAccess(guildId.trim());
-      setStatus("Loaded");
-    } catch (err) {
-      setError(String(err));
-      setStatus("Failed");
-      setOperation(null);
-      setOrbat(null);
-      setPermissions(null);
-      setAdmins([]);
-    } finally {
-      setLoading(false);
-    }
+    await loadGuildContext(selectedGuildId);
   }
 
   async function requestSlot(slotId: number) {
@@ -131,21 +205,23 @@ function App() {
       setSession(null);
       setPermissions(null);
       setAdmins([]);
+      setGuilds([]);
+      setGuildId("");
+      setSelectedGuildId("");
+      setOperation(null);
+      setOrbat(null);
+      setShowAdminPanel(false);
       setStatus("Disconnected");
     }
   }
 
   async function createOperation() {
     if (!guildId.trim()) {
-      setError("Please enter and load a guild first.");
+      setError("Please select a guild first.");
       return;
     }
     if (!newOperationName.trim()) {
       setError("Please enter an operation name.");
-      return;
-    }
-    if (!session) {
-      setError("Please log in with Discord first.");
       return;
     }
     if (!permissions?.is_admin) {
@@ -223,6 +299,25 @@ function App() {
     }
   }
 
+  if (!session) {
+    return (
+      <div className="page">
+        <section className="panel login-panel">
+          <h1>ORBAT Platform</h1>
+          <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
+          <a className="button-link" href={discordLoginUrl(undefined, buildAppHashUrl())}>
+            Login with Discord
+          </a>
+          {error && <p className="error">{error}</p>}
+        </section>
+      </div>
+    );
+  }
+
+  if (route !== "app") {
+    return null;
+  }
+
   return (
     <div className="page">
       <header className="hero">
@@ -231,22 +326,30 @@ function App() {
           <p className="subtitle">{status}</p>
         </div>
         <div className="row">
-          {session ? (
-            <button onClick={logout}>Logout ({session.username})</button>
-          ) : (
-            <a className="button-link" href={discordLoginUrl(guildId || undefined)}>
-              Login with Discord
-            </a>
-          )}
+          <button onClick={logout}>Logout ({session.username})</button>
         </div>
       </header>
 
       <section className="panel">
-        <h2>Connect Guild</h2>
-        <form onSubmit={onConnect} className="row">
-          <input value={guildId} onChange={(e) => setGuildId(e.target.value)} placeholder="Discord Guild ID" />
-          <button type="submit" disabled={loading}>{loading ? "Loading..." : "Load Active Operation"}</button>
+        <h2>Select Server</h2>
+        <form onSubmit={onSelectGuild} className="row">
+          <select value={selectedGuildId} onChange={(e) => setSelectedGuildId(e.target.value)}>
+            <option value="">Select a Discord server</option>
+            {guilds.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+          <button type="submit" disabled={loading || !selectedGuildId}>
+            {loading ? "Loading..." : "Load Server"}
+          </button>
         </form>
+        {guilds.length === 0 && (
+          <p className="access-note">
+            Keine gemeinsamen Server gefunden. Der Bot muss im Server sein.
+          </p>
+        )}
         {permissions && (
           <p className="access-note">
             Access: {permissions.is_admin ? "Admin" : "Viewer"} ({permissions.is_discord_admin ? "Discord" : "Portal"} auth)
@@ -323,26 +426,32 @@ function App() {
 
       <section className="panel">
         <h2>Live ORBAT</h2>
-        {operation && <p className="op-title">Operation: <strong>{operation.name}</strong></p>}
-        {orbat?.squads.map((squad) => (
-          <div key={squad.id} className="squad">
-            <h3>{squad.name}</h3>
-            <ul>
-              {squad.slots.map((slot) => (
-                <li key={slot.id}>
-                  <span>
-                    {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
-                  </span>
-                  {!slot.assigned_to_member_name && (
-                    <button onClick={() => requestSlot(slot.id)} disabled={!session}>
-                      {session ? "Request" : "Login required"}
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
+        {operation ? (
+          <>
+            <p className="op-title">Operation: <strong>{operation.name}</strong></p>
+            {orbat?.squads.map((squad) => (
+              <div key={squad.id} className="squad">
+                <h3>{squad.name}</h3>
+                <ul>
+                  {squad.slots.map((slot) => (
+                    <li key={slot.id}>
+                      <span>
+                        {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                      </span>
+                      {!slot.assigned_to_member_name && (
+                        <button onClick={() => requestSlot(slot.id)} disabled={!session}>
+                          {session ? "Request" : "Login required"}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </>
+        ) : (
+          <p className="access-note">No active operation in this server yet.</p>
+        )}
       </section>
 
       {error && <p className="error">{error}</p>}

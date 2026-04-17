@@ -305,6 +305,22 @@ async def _create_session_from_discord(
     return user_data["id"]
 
 
+def _guild_icon_url(guild_id: str, icon_hash: Optional[str]) -> Optional[str]:
+    if not icon_hash:
+        return None
+    return f"https://cdn.discordapp.com/icons/{guild_id}/{icon_hash}.png"
+
+
+def _has_manage_permissions(permissions_value: str) -> bool:
+    try:
+        perms = int(permissions_value)
+    except Exception:
+        return False
+    admin_flag = 0x8
+    manage_guild_flag = 0x20
+    return bool(perms & admin_flag or perms & manage_guild_flag)
+
+
 def create_api_app(bot) -> FastAPI:
     app = FastAPI(title="ORBAT API", version="0.1.0")
     app.state.bot = bot
@@ -395,7 +411,7 @@ def create_api_app(bot) -> FastAPI:
                 "client_id": client_id,
                 "redirect_uri": redirect_uri,
                 "response_type": "code",
-                "scope": "identify",
+                "scope": "identify guilds",
                 "state": _serialize_state(guild_id, return_to),
                 "prompt": "consent",
             }
@@ -432,6 +448,42 @@ def create_api_app(bot) -> FastAPI:
     async def auth_session(orbat_session: Optional[str] = Cookie(default=None)):
         session = await _session_from_token(orbat_session)
         return _serialize_session(session)
+
+    @app.get("/api/auth/discord/guilds")
+    async def auth_discord_guilds(orbat_session: Optional[str] = Cookie(default=None)):
+        session = await _session_from_token(orbat_session)
+        access_token = session.get("access_token")
+        if not access_token:
+            raise HTTPException(status_code=401, detail="Session missing Discord access token. Please login again.")
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.get(
+                "https://discord.com/api/users/@me/guilds",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=401, detail="Failed to load Discord guilds. Please login again.")
+
+        raw_guilds = resp.json()
+        items = []
+        for guild in raw_guilds:
+            guild_id = str(guild.get("id", ""))
+            if not guild_id:
+                continue
+            if app.state.bot.get_guild(int(guild_id)) is None:
+                continue
+            items.append(
+                {
+                    "id": guild_id,
+                    "name": guild.get("name", "Unknown Guild"),
+                    "icon_url": _guild_icon_url(guild_id, guild.get("icon")),
+                    "is_owner": bool(guild.get("owner", False)),
+                    "can_manage": _has_manage_permissions(str(guild.get("permissions", "0"))),
+                }
+            )
+
+        items.sort(key=lambda g: g["name"].lower())
+        return items
 
     @app.post("/api/auth/logout")
     async def auth_logout(response: Response, orbat_session: Optional[str] = Cookie(default=None)):

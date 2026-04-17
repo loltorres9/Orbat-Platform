@@ -6,6 +6,14 @@ export type Session = {
   expires_at: string;
 };
 
+export type DiscordGuild = {
+  id: string;
+  name: string;
+  icon_url?: string | null;
+  is_owner: boolean;
+  can_manage: boolean;
+};
+
 export type GuildPermissions = {
   guild_id: string;
   is_portal_admin: boolean;
