@@ -1,7 +1,7 @@
 import asyncpg
 import os
-import secrets
-from datetime import datetime, timedelta
+import json
+from typing import Optional
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 
@@ -18,18 +18,11 @@ async def get_pool():
 async def init_db():
     pool = await get_pool()
     async with pool.acquire() as db:
-        # ---- Existing tables ----
         await db.execute('''
             CREATE TABLE IF NOT EXISTS operations (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 name TEXT NOT NULL,
-                sheet_url TEXT,
-                sheet_id TEXT,
-                squad_col INTEGER,
-                role_col INTEGER,
-                status_col INTEGER,
-                assigned_col INTEGER,
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -39,11 +32,10 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 operation_id INTEGER NOT NULL,
+                slot_id INTEGER,
                 member_id TEXT NOT NULL,
                 member_name TEXT NOT NULL,
                 slot_label TEXT NOT NULL,
-                sheet_row INTEGER,
-                sheet_col INTEGER,
                 status TEXT DEFAULT 'pending',
                 approval_message_id TEXT,
                 approval_channel_id TEXT,
@@ -55,15 +47,53 @@ async def init_db():
             )
         ''')
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS orbat_messages (
-                guild_id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL,
-                message_id TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            CREATE TABLE IF NOT EXISTS squads (
+                id SERIAL PRIMARY KEY,
+                operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(operation_id, name)
             )
         ''')
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS open_slots_messages (
+            CREATE TABLE IF NOT EXISTS slots (
+                id SERIAL PRIMARY KEY,
+                operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+                squad_id INTEGER NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
+                role_name TEXT NOT NULL,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                assigned_to_member_id TEXT,
+                assigned_to_member_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                id SERIAL PRIMARY KEY,
+                session_token TEXT UNIQUE NOT NULL,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                avatar_url TEXT,
+                access_token TEXT,
+                refresh_token TEXT,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS web_admins (
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                username TEXT,
+                added_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (guild_id, user_id)
+            )
+        ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS orbat_messages (
                 guild_id TEXT PRIMARY KEY,
                 channel_id TEXT NOT NULL,
                 message_id TEXT NOT NULL,
@@ -76,59 +106,87 @@ async def init_db():
                 timezone TEXT NOT NULL DEFAULT 'UTC'
             )
         ''')
-
-        # ---- Migration: add columns to existing tables ----
-        await db.execute('ALTER TABLE operations ADD COLUMN IF NOT EXISTS event_time TIMESTAMP')
-        await db.execute('ALTER TABLE operations ADD COLUMN IF NOT EXISTS reminder_minutes INTEGER DEFAULT 30')
-        await db.execute('ALTER TABLE operations ADD COLUMN IF NOT EXISTS reminder_fired INTEGER DEFAULT 0')
-        await db.execute('ALTER TABLE operations ADD COLUMN IF NOT EXISTS description TEXT')
-        await db.execute('ALTER TABLE requests ADD COLUMN IF NOT EXISTS slot_id INTEGER')
-        # Make sheet columns nullable for web-created operations
-        await db.execute('ALTER TABLE operations ALTER COLUMN sheet_url DROP NOT NULL')
-        await db.execute('ALTER TABLE operations ALTER COLUMN sheet_id DROP NOT NULL')
-        await db.execute('ALTER TABLE requests ALTER COLUMN sheet_row DROP NOT NULL')
-
-        # ---- New tables ----
+        # Add event scheduling columns to existing operations tables
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS squads (
-                id SERIAL PRIMARY KEY,
-                operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
-                name TEXT NOT NULL,
-                color TEXT DEFAULT '#4A90D9',
-                display_order INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                event_time TIMESTAMP
         ''')
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS slots (
-                id SERIAL PRIMARY KEY,
-                squad_id INTEGER NOT NULL REFERENCES squads(id) ON DELETE CASCADE,
-                role_name TEXT NOT NULL,
-                display_order INTEGER DEFAULT 0,
-                assigned_to_member_id TEXT,
-                assigned_to_name TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                reminder_minutes INTEGER DEFAULT 30
         ''')
         await db.execute('''
-            CREATE TABLE IF NOT EXISTS web_sessions (
-                id TEXT PRIMARY KEY,
-                discord_user_id TEXT NOT NULL,
-                discord_username TEXT NOT NULL,
-                discord_avatar TEXT,
-                access_token TEXT NOT NULL,
-                refresh_token TEXT,
-                guilds JSONB,
-                expires_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
+            ALTER TABLE operations ADD COLUMN IF NOT EXISTS
+                reminder_fired INTEGER DEFAULT 0
+        ''')
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_left TEXT DEFAULT 'Left Wing'")
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_center TEXT DEFAULT 'Center'")
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_right TEXT DEFAULT 'Right Wing'")
+        await db.execute('''
+            ALTER TABLE requests ADD COLUMN IF NOT EXISTS slot_id INTEGER
+        ''')
+        await db.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS team TEXT")
+        await db.execute('''
+            ALTER TABLE squads ADD COLUMN IF NOT EXISTS column_index INTEGER NOT NULL DEFAULT 0
+        ''')
+        await db.execute("ALTER TABLE squads ADD COLUMN IF NOT EXISTS notes TEXT")
+        # Hard cleanup: drop old sheet-based columns once migrated.
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_url")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_id")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS squad_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS role_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS status_col")
+        await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS assigned_col")
+        await db.execute("ALTER TABLE requests DROP COLUMN IF EXISTS sheet_row")
+        await db.execute("ALTER TABLE requests DROP COLUMN IF EXISTS sheet_col")
+        await db.execute('''
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'requests_slot_id_fkey'
+                ) THEN
+                    ALTER TABLE requests
+                    ADD CONSTRAINT requests_slot_id_fkey
+                    FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE SET NULL;
+                END IF;
+            END
+            $$;
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_operations_guild_active
+            ON operations(guild_id, is_active, created_at DESC)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_squads_operation_order
+            ON squads(operation_id, display_order, id)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_squads_operation_column_order
+            ON squads(operation_id, column_index, display_order, id)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_slots_operation_order
+            ON slots(operation_id, display_order, id)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_slots_squad_order
+            ON slots(squad_id, display_order, id)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_requests_operation_status
+            ON requests(operation_id, status, created_at)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_web_sessions_token
+            ON web_sessions(session_token)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_web_admins_guild
+            ON web_admins(guild_id, created_at)
         ''')
 
-
-# ===========================================================================
-# Operations
-# ===========================================================================
 
 async def get_active_operation(guild_id: str):
     pool = await get_pool()
@@ -139,257 +197,53 @@ async def get_active_operation(guild_id: str):
         )
 
 
-async def create_operation(guild_id: str, name: str, description: str = None) -> int:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            'UPDATE operations SET is_active = 0 WHERE guild_id = $1',
-            guild_id,
-        )
-        row = await db.fetchrow(
-            '''INSERT INTO operations (guild_id, name, description)
-               VALUES ($1, $2, $3)
-               RETURNING id''',
-            guild_id, name, description,
-        )
-        return row['id']
-
-
 async def get_operation_by_id(operation_id: int):
     pool = await get_pool()
     async with pool.acquire() as db:
-        return await db.fetchrow('SELECT * FROM operations WHERE id = $1', operation_id)
-
-
-async def get_operations_for_guild(guild_id: str) -> list:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetch(
-            'SELECT * FROM operations WHERE guild_id = $1 ORDER BY created_at DESC',
-            guild_id,
-        )
-
-
-async def activate_operation(operation_id: int, guild_id: str):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute('UPDATE operations SET is_active = 0 WHERE guild_id = $1', guild_id)
-        await db.execute('UPDATE operations SET is_active = 1 WHERE id = $1', operation_id)
-
-
-async def update_operation(operation_id: int, name: str = None, description: str = None):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        if name is not None:
-            await db.execute('UPDATE operations SET name = $1 WHERE id = $2', name, operation_id)
-        if description is not None:
-            await db.execute('UPDATE operations SET description = $1 WHERE id = $2', description, operation_id)
-
-
-async def delete_operation(operation_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute('DELETE FROM operations WHERE id = $1', operation_id)
-
-
-# ===========================================================================
-# Squads
-# ===========================================================================
-
-async def create_squad(operation_id: int, name: str, color: str = '#4A90D9',
-                       display_order: int = 0) -> int:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        row = await db.fetchrow(
-            '''INSERT INTO squads (operation_id, name, color, display_order)
-               VALUES ($1, $2, $3, $4)
-               RETURNING id''',
-            operation_id, name, color, display_order,
-        )
-        return row['id']
-
-
-async def update_squad(squad_id: int, name: str = None, color: str = None,
-                       display_order: int = None):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        if name is not None:
-            await db.execute('UPDATE squads SET name = $1 WHERE id = $2', name, squad_id)
-        if color is not None:
-            await db.execute('UPDATE squads SET color = $1 WHERE id = $2', color, squad_id)
-        if display_order is not None:
-            await db.execute('UPDATE squads SET display_order = $1 WHERE id = $2', display_order, squad_id)
-
-
-async def delete_squad(squad_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute('DELETE FROM squads WHERE id = $1', squad_id)
-
-
-async def get_squad(squad_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetchrow('SELECT * FROM squads WHERE id = $1', squad_id)
-
-
-async def get_squads_for_operation(operation_id: int) -> list:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetch(
-            'SELECT * FROM squads WHERE operation_id = $1 ORDER BY display_order, id',
+        return await db.fetchrow(
+            "SELECT * FROM operations WHERE id = $1",
             operation_id,
         )
 
 
-# ===========================================================================
-# Slots
-# ===========================================================================
-
-async def create_slot(squad_id: int, role_name: str, display_order: int = 0) -> int:
+async def get_pending_slot_ids(operation_id: int) -> set[int]:
     pool = await get_pool()
     async with pool.acquire() as db:
-        row = await db.fetchrow(
-            '''INSERT INTO slots (squad_id, role_name, display_order)
-               VALUES ($1, $2, $3)
-               RETURNING id''',
-            squad_id, role_name, display_order,
+        rows = await db.fetch(
+            """SELECT slot_id
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'pending'
+                 AND slot_id IS NOT NULL""",
+            operation_id,
         )
-        return row['id']
+        return {int(row["slot_id"]) for row in rows}
 
 
-async def update_slot(slot_id: int, role_name: str = None, display_order: int = None):
+async def get_approved_slot_ids(operation_id: int) -> set[int]:
     pool = await get_pool()
     async with pool.acquire() as db:
-        if role_name is not None:
-            await db.execute('UPDATE slots SET role_name = $1 WHERE id = $2', role_name, slot_id)
-        if display_order is not None:
-            await db.execute('UPDATE slots SET display_order = $1 WHERE id = $2', display_order, slot_id)
-
-
-async def delete_slot(slot_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute('DELETE FROM slots WHERE id = $1', slot_id)
-
-
-async def get_slot(slot_id: int):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetchrow('SELECT * FROM slots WHERE id = $1', slot_id)
-
-
-async def get_slots_for_squad(squad_id: int) -> list:
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetch(
-            'SELECT * FROM slots WHERE squad_id = $1 ORDER BY display_order, id',
-            squad_id,
+        rows = await db.fetch(
+            """SELECT slot_id
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'approved'
+                 AND slot_id IS NOT NULL""",
+            operation_id,
         )
+        return {int(row["slot_id"]) for row in rows}
 
 
-# ===========================================================================
-# ORBAT queries (replace Google Sheets reads)
-# ===========================================================================
-
-async def get_orbat_slots(operation_id: int) -> list:
-    """All slots with squad info, for ORBAT display and Discord embed."""
+async def get_slot_by_id(slot_id: int):
     pool = await get_pool()
     async with pool.acquire() as db:
-        return await db.fetch('''
-            SELECT s.id, s.role_name, s.display_order, s.assigned_to_member_id,
-                   s.assigned_to_name, s.squad_id,
-                   sq.name AS squad_name, sq.display_order AS squad_display_order,
-                   sq.color AS squad_color
-            FROM slots s
-            JOIN squads sq ON s.squad_id = sq.id
-            WHERE sq.operation_id = $1
-            ORDER BY sq.display_order, sq.id, s.display_order, s.id
-        ''', operation_id)
-
-
-async def get_available_slots(operation_id: int) -> list:
-    """Unassigned slots for the request picker."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetch('''
-            SELECT s.id, s.role_name, s.display_order, s.squad_id,
-                   sq.name AS squad_name, sq.display_order AS squad_display_order
-            FROM slots s
-            JOIN squads sq ON s.squad_id = sq.id
-            WHERE sq.operation_id = $1
-              AND s.assigned_to_member_id IS NULL
-            ORDER BY sq.display_order, sq.id, s.display_order, s.id
-        ''', operation_id)
-
-
-async def get_slot_with_squad(slot_id: int):
-    """Get a slot with its squad info."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetchrow('''
-            SELECT s.*, sq.name AS squad_name, sq.operation_id
-            FROM slots s
-            JOIN squads sq ON s.squad_id = sq.id
-            WHERE s.id = $1
-        ''', slot_id)
-
-
-# ===========================================================================
-# Slot assignment (replace Google Sheets writes)
-# ===========================================================================
-
-async def assign_slot_to_member(slot_id: int, member_id: str, member_name: str) -> bool:
-    """Assign a member to a slot. Returns False if slot is already taken."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        result = await db.execute(
-            '''UPDATE slots
-               SET assigned_to_member_id = $1, assigned_to_name = $2,
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE id = $3 AND assigned_to_member_id IS NULL''',
-            member_id, member_name, slot_id,
-        )
-        return int(result.split()[-1]) > 0
-
-
-async def unassign_slot(slot_id: int):
-    """Clear a slot assignment."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            '''UPDATE slots
-               SET assigned_to_member_id = NULL, assigned_to_name = NULL,
-                   updated_at = CURRENT_TIMESTAMP
-               WHERE id = $1''',
+        return await db.fetchrow(
+            """SELECT s.*, sq.name AS squad_name
+               FROM slots s
+               JOIN squads sq ON sq.id = s.squad_id
+               WHERE s.id = $1""",
             slot_id,
         )
-
-
-# ===========================================================================
-# Requests
-# ===========================================================================
-
-async def get_pending_slot_ids(operation_id: int) -> list:
-    """Return slot_ids that have pending requests."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        rows = await db.fetch(
-            "SELECT DISTINCT slot_id FROM requests WHERE operation_id = $1 AND status = 'pending' AND slot_id IS NOT NULL",
-            operation_id,
-        )
-        return [row['slot_id'] for row in rows]
-
-
-async def get_approved_slot_ids(operation_id: int) -> list:
-    """Return slot_ids that have approved requests."""
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        rows = await db.fetch(
-            "SELECT DISTINCT slot_id FROM requests WHERE operation_id = $1 AND status = 'approved' AND slot_id IS NOT NULL",
-            operation_id,
-        )
-        return [row['slot_id'] for row in rows]
 
 
 async def get_member_active_request(guild_id: str, operation_id: int, member_id: str):
@@ -398,25 +252,29 @@ async def get_member_active_request(guild_id: str, operation_id: int, member_id:
         return await db.fetchrow(
             """SELECT * FROM requests
                WHERE guild_id = $1 AND operation_id = $2 AND member_id = $3
-               AND status IN ('pending', 'approved')""",
+               AND status IN ('pending', 'approved')
+               ORDER BY
+                 CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+                 updated_at DESC,
+                 id DESC
+               LIMIT 1""",
             guild_id, operation_id, member_id,
         )
 
 
 async def create_request(guild_id: str, operation_id: int, member_id: str,
-                         member_name: str, slot_label: str, slot_id: int,
-                         unit_role: str = None) -> int:
+                         member_name: str, slot_label: str, unit_role: str = None,
+                         slot_id: Optional[int] = None) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
         row = await db.fetchrow(
             '''INSERT INTO requests
-               (guild_id, operation_id, member_id, member_name, slot_label, slot_id, unit_role)
+               (guild_id, operation_id, slot_id, member_id, member_name, slot_label, unit_role)
                VALUES ($1, $2, $3, $4, $5, $6, $7)
                RETURNING id''',
-            guild_id, operation_id, member_id, member_name, slot_label, slot_id, unit_role,
+            guild_id, operation_id, slot_id, member_id, member_name, slot_label, unit_role,
         )
         return row['id']
-
 
 async def update_request_message(request_id: int, message_id: str, channel_id: str):
     pool = await get_pool()
@@ -424,6 +282,16 @@ async def update_request_message(request_id: int, message_id: str, channel_id: s
         await db.execute(
             'UPDATE requests SET approval_message_id = $1, approval_channel_id = $2 WHERE id = $3',
             message_id, channel_id, request_id,
+        )
+
+
+async def update_request_unit_role(request_id: int, unit_role: Optional[str]):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            "UPDATE requests SET unit_role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            unit_role,
+            request_id,
         )
 
 
@@ -471,6 +339,7 @@ async def get_approved_requests(operation_id: int) -> list:
 
 
 async def get_active_requests(operation_id: int) -> list:
+    """Return all pending and approved requests for an operation."""
     pool = await get_pool()
     async with pool.acquire() as db:
         return await db.fetch(
@@ -479,12 +348,12 @@ async def get_active_requests(operation_id: int) -> list:
         )
 
 
-async def cancel_request_by_id(request_id: int) -> bool:
+async def cancel_request_any_by_id(request_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as db:
         result = await db.execute(
             """UPDATE requests SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-               WHERE id = $1 AND status = 'approved'""",
+               WHERE id = $1 AND status IN ('pending', 'approved')""",
             request_id,
         )
         return int(result.split()[-1]) > 0
@@ -512,21 +381,33 @@ async def deny_request(request_id: int, denied_by: str, reason: str = None):
         )
 
 
-async def get_competing_requests(operation_id: int, slot_id: int, exclude_request_id: int) -> list:
-    """Return all other pending requests for the same slot."""
+async def deny_pending_requests_for_slot(
+    operation_id: int,
+    slot_id: int,
+    denied_by: str,
+    reason: str,
+    exclude_request_id: Optional[int] = None,
+) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
         return await db.fetch(
-            """SELECT * FROM requests
-               WHERE operation_id = $1 AND slot_id = $2
-               AND id != $3 AND status = 'pending'""",
-            operation_id, slot_id, exclude_request_id,
+            """UPDATE requests
+               SET status = 'denied',
+                   approved_by = $1,
+                   denial_reason = $2,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE operation_id = $3
+                 AND slot_id = $4
+                 AND status = 'pending'
+                 AND ($5::int IS NULL OR id <> $5)
+               RETURNING *""",
+            denied_by,
+            reason,
+            operation_id,
+            slot_id,
+            exclude_request_id,
         )
 
-
-# ===========================================================================
-# Messages
-# ===========================================================================
 
 async def save_orbat_message(guild_id: str, channel_id: str, message_id: str):
     pool = await get_pool()
@@ -551,33 +432,6 @@ async def get_orbat_message(guild_id: str):
         )
 
 
-async def save_open_slots_message(guild_id: str, channel_id: str, message_id: str):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        await db.execute(
-            '''INSERT INTO open_slots_messages (guild_id, channel_id, message_id)
-               VALUES ($1, $2, $3)
-               ON CONFLICT (guild_id) DO UPDATE SET
-                   channel_id = EXCLUDED.channel_id,
-                   message_id = EXCLUDED.message_id,
-                   updated_at = CURRENT_TIMESTAMP''',
-            guild_id, channel_id, message_id,
-        )
-
-
-async def get_open_slots_message(guild_id: str):
-    pool = await get_pool()
-    async with pool.acquire() as db:
-        return await db.fetchrow(
-            'SELECT channel_id, message_id FROM open_slots_messages WHERE guild_id = $1',
-            guild_id,
-        )
-
-
-# ===========================================================================
-# Guild settings
-# ===========================================================================
-
 async def get_guild_timezone(guild_id: str) -> str:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -598,11 +452,8 @@ async def set_guild_timezone(guild_id: str, timezone: str):
         )
 
 
-# ===========================================================================
-# Event scheduling & reminders
-# ===========================================================================
-
 async def set_event_time(operation_id: int, event_time, reminder_minutes: int):
+    # Store as naive UTC — the column is TIMESTAMP WITHOUT TIME ZONE
     if hasattr(event_time, 'tzinfo') and event_time.tzinfo is not None:
         event_time = event_time.replace(tzinfo=None)
     pool = await get_pool()
@@ -616,6 +467,7 @@ async def set_event_time(operation_id: int, event_time, reminder_minutes: int):
 
 
 async def get_operations_needing_reminder():
+    """Return active operations whose reminder window has arrived but not yet fired."""
     pool = await get_pool()
     async with pool.acquire() as db:
         return await db.fetch(
@@ -637,6 +489,22 @@ async def mark_reminder_fired(operation_id: int):
         )
 
 
+async def get_competing_requests_by_slot(operation_id: int, slot_id: int, exclude_request_id: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """SELECT *
+               FROM requests
+               WHERE operation_id = $1
+                 AND slot_id = $2
+                 AND id != $3
+                 AND status = 'pending'""",
+            operation_id,
+            slot_id,
+            exclude_request_id,
+        )
+
+
 async def get_approved_member_ids(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -647,47 +515,578 @@ async def get_approved_member_ids(operation_id: int) -> list:
         return [(row['member_id'], row['slot_label']) for row in rows]
 
 
-# ===========================================================================
-# Web sessions
-# ===========================================================================
+async def _notify_slot_update(db, guild_id: str, operation_id: int, event: str, slot_id: Optional[int] = None):
+    if not guild_id:
+        guild_id = await db.fetchval(
+            "SELECT guild_id FROM operations WHERE id = $1",
+            operation_id,
+        )
+    payload = json.dumps(
+        {
+            "guild_id": guild_id,
+            "operation_id": operation_id,
+            "event": event,
+            "slot_id": slot_id,
+        }
+    )
+    await db.execute("SELECT pg_notify('slot_updates', $1)", payload)
 
-async def create_web_session(discord_user_id: str, discord_username: str,
-                             discord_avatar: str, access_token: str,
-                             refresh_token: str, guilds: list,
-                             ttl_hours: int = 24) -> str:
-    session_id = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
+
+async def emit_slot_update(guild_id: str, operation_id: int, event: str, slot_id: Optional[int] = None):
     pool = await get_pool()
     async with pool.acquire() as db:
-        import json
-        await db.execute(
-            '''INSERT INTO web_sessions
-               (id, discord_user_id, discord_username, discord_avatar,
-                access_token, refresh_token, guilds, expires_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)''',
-            session_id, discord_user_id, discord_username, discord_avatar,
-            access_token, refresh_token, json.dumps(guilds), expires_at,
+        await _notify_slot_update(db, guild_id, operation_id, event, slot_id)
+
+
+async def create_operation_v2(
+    guild_id: str,
+    name: str,
+    event_time=None,
+    reminder_minutes: int = 30,
+    activate: bool = False,
+) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        async with db.transaction():
+            if activate:
+                await db.execute("UPDATE operations SET is_active = 0 WHERE guild_id = $1", guild_id)
+            row = await db.fetchrow(
+                """INSERT INTO operations (
+                     guild_id, name, event_time, reminder_minutes, is_active,
+                     lane_name_left, lane_name_center, lane_name_right
+                   )
+                   VALUES ($1, $2, $3, $4, $5, 'Left Wing', 'Center', 'Right Wing')
+                   RETURNING id""",
+                guild_id,
+                name,
+                event_time,
+                reminder_minutes,
+                1 if activate else 0,
+            )
+            return row["id"]
+
+
+async def update_operation_name(operation_id: int, name: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            "UPDATE operations SET name = $1 WHERE id = $2",
+            name,
+            operation_id,
         )
-    return session_id
+        return int(result.split()[-1]) > 0
 
 
-async def get_web_session(session_id: str):
+async def copy_operation_v2(source_operation_id: int, new_name: str, activate: bool = False) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        async with db.transaction():
+            source_op = await db.fetchrow("SELECT * FROM operations WHERE id = $1", source_operation_id)
+            if not source_op:
+                raise ValueError("Source operation not found")
+
+            if activate:
+                await db.execute("UPDATE operations SET is_active = 0 WHERE guild_id = $1", source_op["guild_id"])
+
+            new_op = await db.fetchrow(
+                """INSERT INTO operations (
+                     guild_id, name, event_time, reminder_minutes, reminder_fired, is_active,
+                     lane_name_left, lane_name_center, lane_name_right
+                   )
+                   VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)
+                   RETURNING id""",
+                source_op["guild_id"],
+                new_name,
+                source_op["event_time"],
+                source_op["reminder_minutes"],
+                1 if activate else 0,
+                source_op["lane_name_left"] or "Left Wing",
+                source_op["lane_name_center"] or "Center",
+                source_op["lane_name_right"] or "Right Wing",
+            )
+            new_operation_id = int(new_op["id"])
+
+            source_squads = await db.fetch(
+                "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
+                source_operation_id,
+            )
+            squad_map: dict[int, int] = {}
+            for squad in source_squads:
+                inserted = await db.fetchrow(
+                    """INSERT INTO squads (operation_id, name, display_order, column_index, notes)
+                       VALUES ($1, $2, $3, $4, $5)
+                       RETURNING id""",
+                    new_operation_id,
+                    squad["name"],
+                    squad["display_order"],
+                    squad["column_index"] if squad["column_index"] is not None else 0,
+                    squad["notes"],
+                )
+                squad_map[int(squad["id"])] = int(inserted["id"])
+
+            source_slots = await db.fetch(
+                "SELECT * FROM slots WHERE operation_id = $1 ORDER BY display_order, id",
+                source_operation_id,
+            )
+            for slot in source_slots:
+                mapped_squad_id = squad_map.get(int(slot["squad_id"]))
+                if not mapped_squad_id:
+                    continue
+                await db.execute(
+                    """INSERT INTO slots (
+                         operation_id, squad_id, role_name, display_order, team,
+                         assigned_to_member_id, assigned_to_member_name
+                       )
+                       VALUES ($1, $2, $3, $4, $5, NULL, NULL)""",
+                    new_operation_id,
+                    mapped_squad_id,
+                    slot["role_name"],
+                    slot["display_order"],
+                    slot["team"],
+                )
+
+            await _notify_slot_update(db, source_op["guild_id"], new_operation_id, "operation_copied")
+            return new_operation_id
+
+
+async def update_operation_lane_names(
+    operation_id: int,
+    lane_name_left: Optional[str] = None,
+    lane_name_center: Optional[str] = None,
+    lane_name_right: Optional[str] = None,
+) -> bool:
+    if lane_name_left is None and lane_name_center is None and lane_name_right is None:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE operations
+               SET lane_name_left = COALESCE($1, lane_name_left),
+                   lane_name_center = COALESCE($2, lane_name_center),
+                   lane_name_right = COALESCE($3, lane_name_right)
+               WHERE id = $4""",
+            lane_name_left,
+            lane_name_center,
+            lane_name_right,
+            operation_id,
+        )
+        return int(result.split()[-1]) > 0
+
+
+async def list_operations(guild_id: str) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            "SELECT * FROM operations WHERE guild_id = $1 ORDER BY is_active DESC, created_at DESC",
+            guild_id,
+        )
+
+
+async def activate_operation(guild_id: str, operation_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        async with db.transaction():
+            await db.execute("UPDATE operations SET is_active = 0 WHERE guild_id = $1", guild_id)
+            result = await db.execute(
+                "UPDATE operations SET is_active = 1 WHERE guild_id = $1 AND id = $2",
+                guild_id,
+                operation_id,
+            )
+            return int(result.split()[-1]) > 0
+
+
+async def create_squad(
+    operation_id: int,
+    name: str,
+    display_order: Optional[int] = None,
+    column_index: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        lane = 0 if column_index is None else max(0, min(2, int(column_index)))
+        if display_order is None:
+            display_order = await db.fetchval(
+                "SELECT COALESCE(MAX(display_order), -1) + 1 FROM squads WHERE operation_id = $1 AND column_index = $2",
+                operation_id,
+                lane,
+            )
+        row = await db.fetchrow(
+            """INSERT INTO squads (operation_id, name, display_order, column_index, notes)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id""",
+            operation_id,
+            name,
+            display_order,
+            lane,
+            notes,
+        )
+        await _notify_slot_update(db, "", operation_id, "squad_created")
+        return row["id"]
+
+
+async def list_squads(operation_id: int) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
+            operation_id,
+        )
+
+
+async def update_squad(
+    squad_id: int,
+    name: Optional[str] = None,
+    display_order: Optional[int] = None,
+    column_index: Optional[int] = None,
+    notes: Optional[str] = None,
+    set_notes: bool = False,
+) -> bool:
+    if name is None and display_order is None and column_index is None and not set_notes:
+        return False
+    lane = None if column_index is None else max(0, min(2, int(column_index)))
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow("SELECT operation_id FROM squads WHERE id = $1", squad_id)
+        if not row:
+            return False
+        await db.execute(
+            """UPDATE squads
+               SET name = COALESCE($1, name),
+                   display_order = COALESCE($2, display_order),
+                   column_index = COALESCE($3, column_index),
+                   notes = CASE WHEN $5 THEN $4 ELSE notes END
+               WHERE id = $6""",
+            name,
+            display_order,
+            lane,
+            notes,
+            set_notes,
+            squad_id,
+        )
+        await _notify_slot_update(db, "", row["operation_id"], "squad_updated")
+        return True
+
+
+async def delete_squad(squad_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as db:
         row = await db.fetchrow(
-            'SELECT * FROM web_sessions WHERE id = $1 AND expires_at > CURRENT_TIMESTAMP',
-            session_id,
+            """DELETE FROM squads
+               WHERE id = $1
+               RETURNING operation_id""",
+            squad_id,
         )
-        return row
+        if not row:
+            return False
+        await _notify_slot_update(db, "", row["operation_id"], "squad_deleted")
+        return True
 
 
-async def delete_web_session(session_id: str):
+async def create_slot(
+    operation_id: int,
+    squad_id: int,
+    role_name: str,
+    display_order: Optional[int] = None,
+    team: Optional[str] = None,
+    assigned_to_member_id: Optional[str] = None,
+    assigned_to_member_name: Optional[str] = None,
+) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
-        await db.execute('DELETE FROM web_sessions WHERE id = $1', session_id)
+        if display_order is None:
+            display_order = await db.fetchval(
+                "SELECT COALESCE(MAX(display_order), -1) + 1 FROM slots WHERE squad_id = $1",
+                squad_id,
+            )
+        row = await db.fetchrow(
+            """INSERT INTO slots
+               (operation_id, squad_id, role_name, display_order, team, assigned_to_member_id, assigned_to_member_name)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id""",
+            operation_id,
+            squad_id,
+            role_name,
+            display_order,
+            team,
+            assigned_to_member_id,
+            assigned_to_member_name,
+        )
+        await _notify_slot_update(db, "", operation_id, "slot_created", row["id"])
+        return row["id"]
 
 
-async def cleanup_expired_sessions():
+async def list_slots(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
-        await db.execute('DELETE FROM web_sessions WHERE expires_at <= CURRENT_TIMESTAMP')
+        return await db.fetch(
+            """SELECT s.*, sq.name AS squad_name, sq.display_order AS squad_display_order
+               FROM slots s
+               JOIN squads sq ON sq.id = s.squad_id
+               WHERE s.operation_id = $1
+               ORDER BY sq.display_order, s.display_order, s.id""",
+            operation_id,
+        )
+
+
+async def update_slot(
+    slot_id: int,
+    role_name: Optional[str] = None,
+    display_order: Optional[int] = None,
+    squad_id: Optional[int] = None,
+    team: Optional[str] = None,
+    set_team: bool = False,
+) -> bool:
+    if role_name is None and display_order is None and squad_id is None and not set_team:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow("SELECT operation_id FROM slots WHERE id = $1", slot_id)
+        if not row:
+            return False
+        await db.execute(
+            """UPDATE slots
+               SET role_name = COALESCE($1, role_name),
+                   display_order = COALESCE($2, display_order),
+                   squad_id = COALESCE($3, squad_id),
+                   team = CASE WHEN $5 THEN $4 ELSE team END
+               WHERE id = $6""",
+            role_name,
+            display_order,
+            squad_id,
+            team,
+            set_team,
+            slot_id,
+        )
+        await _notify_slot_update(db, "", row["operation_id"], "slot_updated", slot_id)
+        return True
+
+
+async def assign_slot(slot_id: int, member_id: str, member_name: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            """UPDATE slots
+               SET assigned_to_member_id = $1, assigned_to_member_name = $2
+               WHERE id = $3
+               RETURNING operation_id""",
+            member_id,
+            member_name,
+            slot_id,
+        )
+        if not row:
+            return False
+        await _notify_slot_update(db, "", row["operation_id"], "slot_assigned", slot_id)
+        return True
+
+
+async def clear_slot_assignment(slot_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            """UPDATE slots
+               SET assigned_to_member_id = NULL, assigned_to_member_name = NULL
+               WHERE id = $1
+               RETURNING operation_id""",
+            slot_id,
+        )
+        if not row:
+            return False
+        await _notify_slot_update(db, "", row["operation_id"], "slot_cleared", slot_id)
+        return True
+
+
+async def cancel_approved_request_for_slot_member(operation_id: int, slot_id: int, member_id: str) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE requests
+               SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE operation_id = $1
+                 AND slot_id = $2
+                 AND member_id = $3
+                 AND status = 'approved'""",
+            operation_id,
+            slot_id,
+            member_id,
+        )
+        return int(result.split()[-1])
+
+
+async def delete_slot(slot_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            """DELETE FROM slots
+               WHERE id = $1
+               RETURNING operation_id""",
+            slot_id,
+        )
+        if not row:
+            return False
+        await _notify_slot_update(db, "", row["operation_id"], "slot_deleted", slot_id)
+        return True
+
+
+async def get_orbat_structure(operation_id: int) -> dict:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        operation = await db.fetchrow("SELECT * FROM operations WHERE id = $1", operation_id)
+        squads = await db.fetch(
+            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
+            operation_id,
+        )
+        slots = await db.fetch(
+            "SELECT * FROM slots WHERE operation_id = $1 ORDER BY display_order, id",
+            operation_id,
+        )
+        pending_by_slot_rows = await db.fetch(
+            """SELECT slot_id, COUNT(*) AS pending_count
+               FROM requests
+               WHERE operation_id = $1
+                 AND status = 'pending'
+                 AND slot_id IS NOT NULL
+               GROUP BY slot_id""",
+            operation_id,
+        )
+
+    pending_by_slot = {int(r["slot_id"]): int(r["pending_count"]) for r in pending_by_slot_rows}
+
+    squad_map = {
+        s["id"]: {
+            "id": s["id"],
+            "name": s["name"],
+            "display_order": s["display_order"],
+            "column_index": s["column_index"] if s["column_index"] is not None else 0,
+            "notes": s["notes"],
+            "slots": [],
+        }
+        for s in squads
+    }
+    for slot in slots:
+        bucket = squad_map.get(slot["squad_id"])
+        if bucket is not None:
+            bucket["slots"].append(
+                {
+                    "id": slot["id"],
+                    "role_name": slot["role_name"],
+                    "display_order": slot["display_order"],
+                    "team": slot["team"],
+                    "assigned_to_member_id": slot["assigned_to_member_id"],
+                    "assigned_to_member_name": slot["assigned_to_member_name"],
+                    "pending_request_count": pending_by_slot.get(int(slot["id"]), 0),
+                }
+            )
+
+    return {
+        "operation": dict(operation) if operation else None,
+        "squads": sorted(squad_map.values(), key=lambda x: (x["column_index"], x["display_order"])),
+    }
+
+
+async def create_web_session(
+    session_token: str,
+    guild_id: str,
+    user_id: str,
+    username: str,
+    expires_at,
+    avatar_url: Optional[str] = None,
+    access_token: Optional[str] = None,
+    refresh_token: Optional[str] = None,
+):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            """INSERT INTO web_sessions
+               (session_token, guild_id, user_id, username, avatar_url, access_token, refresh_token, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (session_token) DO UPDATE SET
+                   guild_id = EXCLUDED.guild_id,
+                   user_id = EXCLUDED.user_id,
+                   username = EXCLUDED.username,
+                   avatar_url = EXCLUDED.avatar_url,
+                   access_token = EXCLUDED.access_token,
+                   refresh_token = EXCLUDED.refresh_token,
+                   expires_at = EXCLUDED.expires_at""",
+            session_token,
+            guild_id,
+            user_id,
+            username,
+            avatar_url,
+            access_token,
+            refresh_token,
+            expires_at,
+        )
+
+
+async def get_web_session(session_token: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetchrow(
+            """SELECT * FROM web_sessions
+               WHERE session_token = $1 AND expires_at > CURRENT_TIMESTAMP""",
+            session_token,
+        )
+
+
+async def delete_web_session(session_token: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute("DELETE FROM web_sessions WHERE session_token = $1", session_token)
+
+
+async def prune_expired_web_sessions():
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute("DELETE FROM web_sessions WHERE expires_at <= CURRENT_TIMESTAMP")
+
+
+async def list_web_admins(guild_id: str) -> list:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        return await db.fetch(
+            """SELECT guild_id, user_id, username, added_by, created_at
+               FROM web_admins
+               WHERE guild_id = $1
+               ORDER BY created_at ASC""",
+            guild_id,
+        )
+
+
+async def is_web_admin(guild_id: str, user_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        row = await db.fetchrow(
+            "SELECT 1 FROM web_admins WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
+        return row is not None
+
+
+async def upsert_web_admin(guild_id: str, user_id: str, username: Optional[str], added_by: str):
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        await db.execute(
+            """INSERT INTO web_admins (guild_id, user_id, username, added_by)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (guild_id, user_id)
+               DO UPDATE SET
+                   username = EXCLUDED.username,
+                   added_by = EXCLUDED.added_by""",
+            guild_id,
+            user_id,
+            username,
+            added_by,
+        )
+
+
+async def delete_web_admin(guild_id: str, user_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            "DELETE FROM web_admins WHERE guild_id = $1 AND user_id = $2",
+            guild_id,
+            user_id,
+        )
+        return int(result.split()[-1]) > 0

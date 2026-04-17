@@ -1,0 +1,81 @@
+name: Deploy Web to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "pages-main"
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      API_MAIN: ${{ secrets.VITE_API_BASE_URL || vars.VITE_API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve deploy target
+        shell: bash
+        run: |
+          echo "PUBLIC_BASE_PATH=/Orbat-Platform/" >> "$GITHUB_ENV"
+          echo "VITE_API_BASE_URL=${API_MAIN}" >> "$GITHUB_ENV"
+          echo "SITE_URL=https://loltorres9.github.io/Orbat-Platform/" >> "$GITHUB_ENV"
+
+      - name: Validate API URL
+        shell: bash
+        run: |
+          if [[ -n "${API_MAIN}" ]]; then
+            echo "API_MAIN_SET=true"
+          else
+            echo "API_MAIN_SET=false"
+          fi
+          if [[ -z "${VITE_API_BASE_URL}" ]]; then
+            echo "Missing VITE_API_BASE_URL for main." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
+          VITE_PUBLIC_BASE_PATH: ${{ env.PUBLIC_BASE_PATH }}
+
+      - name: Add nojekyll marker
+        shell: bash
+        run: touch dist/.nojekyll
+
+      - name: Publish site
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./web/dist
+
+      - name: Print site URL
+        shell: bash
+        run: echo "Deployed to ${SITE_URL}"
