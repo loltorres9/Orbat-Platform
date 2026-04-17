@@ -9,35 +9,8 @@ function App() {
   const teamGroupTitle = (team: string) => (team && team.trim() ? team : "");
   const defaultLaneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
-  const configuredReturnTo = (import.meta.env.VITE_AUTH_RETURN_TO_URL as string | undefined)?.trim();
-  const normalizeReturnTo = (target: string) => {
-    if (!target) return target;
-    if (target.includes("#/")) return target;
-    return `${target.replace(/\/+$/, "")}#/app`;
-  };
-  const embeddedReferrerReturnTo = (() => {
-    if (typeof document === "undefined") return "";
-    if (!document.referrer) return "";
-    try {
-      const ref = new URL(document.referrer);
-      if (!/^https?:$/.test(ref.protocol)) return "";
-      return normalizeReturnTo(ref.origin + ref.pathname);
-    } catch {
-      return "";
-    }
-  })();
   const appHashUrl = `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
-  const buildAppHashUrl = () => {
-    // Prefer explicit configured return target (e.g. custom domain wrapper).
-    // The OAuth/session race is handled separately by sessionChecked + delayed token scrub.
-    if (configuredReturnTo) {
-      return normalizeReturnTo(configuredReturnTo);
-    }
-    if (embeddedReferrerReturnTo) {
-      return embeddedReferrerReturnTo;
-    }
-    return appHashUrl;
-  };
+  const buildAppHashUrl = () => appHashUrl;
   const getRoute = () => (window.location.hash.startsWith("#/app") ? "app" : "login");
   const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
 
