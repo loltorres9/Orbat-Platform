@@ -28,7 +28,10 @@ function App() {
   const [showAdminModal, setShowAdminModal] = useState(false);
 
   const [newOperationName, setNewOperationName] = useState("");
+  const [renameOperationName, setRenameOperationName] = useState("");
+  const [copyOperationName, setCopyOperationName] = useState("");
   const [newSquadName, setNewSquadName] = useState("");
+  const [newSquadNotes, setNewSquadNotes] = useState("");
   const [newSlotSquadId, setNewSlotSquadId] = useState<number | "">("");
   const [newSlotRole, setNewSlotRole] = useState("");
   const [newSlotTeam, setNewSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("");
@@ -36,6 +39,7 @@ function App() {
   const [newAdminUsername, setNewAdminUsername] = useState("");
   const [editingSquadId, setEditingSquadId] = useState<number | null>(null);
   const [editingSquadName, setEditingSquadName] = useState("");
+  const [editingSquadNotes, setEditingSquadNotes] = useState("");
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
   const [editingSlotName, setEditingSlotName] = useState("");
   const [editingSlotTeam, setEditingSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("");
@@ -272,6 +276,16 @@ function App() {
     return () => ws.close();
   }, [operation?.id]);
 
+  useEffect(() => {
+    if (!operation) {
+      setRenameOperationName("");
+      setCopyOperationName("");
+      return;
+    }
+    setRenameOperationName(operation.name);
+    setCopyOperationName(`${operation.name} Copy`);
+  }, [operation?.id, operation?.name]);
+
   async function onSelectGuild(e: FormEvent) {
     e.preventDefault();
     if (!selectedGuildId) {
@@ -352,12 +366,52 @@ function App() {
     }
   }
 
+  async function renameOperation() {
+    if (!operation || !permissions?.is_admin) return;
+    const name = renameOperationName.trim();
+    if (!name) {
+      setError("Please enter a valid operation name.");
+      return;
+    }
+    try {
+      const updated = await api.updateOperation(operation.id, { name });
+      setOperation(updated);
+      setRenameOperationName(updated.name);
+      if (orbat) {
+        setOrbat({ ...orbat, operation: updated });
+      }
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function copyOperation() {
+    if (!operation || !permissions?.is_admin) return;
+    const name = copyOperationName.trim();
+    if (!name) {
+      setError("Please enter a name for the copied operation.");
+      return;
+    }
+    try {
+      const copied = await api.copyOperation(operation.id, { name, activate: false });
+      await reloadOperation(copied.id);
+      setStatus(`Copied operation loaded: ${copied.name}`);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function addSquad() {
     if (!operation || !newSquadName.trim() || !permissions?.is_admin) return;
     try {
-      await api.addSquad(operation.id, { name: newSquadName.trim(), column_index: 1 });
+      await api.addSquad(operation.id, {
+        name: newSquadName.trim(),
+        column_index: 1,
+        notes: newSquadNotes.trim() || null,
+      });
       await reloadOperation(operation.id);
       setNewSquadName("");
+      setNewSquadNotes("");
     } catch (err) {
       setError(String(err));
     }
@@ -390,11 +444,13 @@ function App() {
   function beginEditSquad(squad: Squad) {
     setEditingSquadId(squad.id);
     setEditingSquadName(squad.name);
+    setEditingSquadNotes(squad.notes || "");
   }
 
   function cancelEditSquad() {
     setEditingSquadId(null);
     setEditingSquadName("");
+    setEditingSquadNotes("");
   }
 
   async function saveEditSquad() {
@@ -404,7 +460,10 @@ function App() {
       return;
     }
     try {
-      await api.updateSquad(editingSquadId, { name: editingSquadName.trim() });
+      await api.updateSquad(editingSquadId, {
+        name: editingSquadName.trim(),
+        notes: editingSquadNotes.trim() || null,
+      });
       await reloadOperation(operation.id);
       cancelEditSquad();
     } catch (err) {
@@ -471,6 +530,7 @@ function App() {
       const created = await api.addSquad(operation.id, {
         name: `${squad.name} Copy`,
         column_index: squad.column_index,
+        notes: squad.notes || null,
       });
       for (const slot of squad.slots) {
         await api.addSlot(operation.id, {
@@ -666,6 +726,20 @@ function App() {
         {operation && permissions?.is_admin && (
           <>
             <div className="row">
+              <input
+                value={renameOperationName}
+                onChange={(e) => setRenameOperationName(e.target.value)}
+                placeholder="Operation name"
+              />
+              <button onClick={renameOperation}>Rename Operation</button>
+              <input
+                value={copyOperationName}
+                onChange={(e) => setCopyOperationName(e.target.value)}
+                placeholder="Copied operation name"
+              />
+              <button className="ghost-btn" onClick={copyOperation}>Copy Operation</button>
+            </div>
+            <div className="row">
               <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
               <input value={laneNameCenter} onChange={(e) => setLaneNameCenter(e.target.value)} placeholder="Center lane name" />
               <input value={laneNameRight} onChange={(e) => setLaneNameRight(e.target.value)} placeholder="Right lane name" />
@@ -673,6 +747,7 @@ function App() {
             </div>
             <div className="row">
               <input value={newSquadName} onChange={(e) => setNewSquadName(e.target.value)} placeholder="Squad name" />
+              <input value={newSquadNotes} onChange={(e) => setNewSquadNotes(e.target.value)} placeholder="Squad notes (e.g. Radio CH 1)" />
               <button onClick={addSquad}>Add Squad</button>
             </div>
             <div className="row">
@@ -745,6 +820,12 @@ function App() {
                                 onChange={(e) => setEditingSquadName(e.target.value)}
                                 placeholder="Squad name"
                               />
+                              <textarea
+                                value={editingSquadNotes}
+                                onChange={(e) => setEditingSquadNotes(e.target.value)}
+                                placeholder="Squad notes (e.g. Radio CH 1)"
+                                rows={2}
+                              />
                               <button onClick={saveEditSquad}>Save</button>
                               <button className="ghost-btn" onClick={cancelEditSquad}>Cancel</button>
                             </div>
@@ -761,6 +842,9 @@ function App() {
                             </div>
                           )}
                         </div>
+                        {editingSquadId !== squad.id && squad.notes ? (
+                          <p className="squad-note">{squad.notes}</p>
+                        ) : null}
                           {teamBuckets(squad.slots).map((teamGroup) => (
                             <div key={teamGroup.team} className="team-group">
                               {teamGroup.team.trim() ? (

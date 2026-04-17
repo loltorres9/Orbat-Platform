@@ -72,12 +72,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  addSquad: (operationId: number, payload: { name: string; display_order?: number; column_index?: number }) =>
+  updateOperation: (operationId: number, payload: { name?: string }) =>
+    req<Operation>(`/api/operations/${operationId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
+  copyOperation: (operationId: number, payload: { name: string; activate?: boolean }) =>
+    req<Operation>(`/api/operations/${operationId}/copy`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }),
+  addSquad: (operationId: number, payload: { name: string; display_order?: number; column_index?: number; notes?: string | null }) =>
     req<{ id: number }>(`/api/operations/${operationId}/squads`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  updateSquad: (squadId: number, payload: { name?: string; display_order?: number; column_index?: number }) =>
+  updateSquad: (squadId: number, payload: { name?: string; display_order?: number; column_index?: number; notes?: string | null }) =>
     req<{ ok: boolean }>(`/api/squads/${squadId}`, {
       method: "PATCH",
       body: JSON.stringify(payload)

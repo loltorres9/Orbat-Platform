@@ -129,6 +129,7 @@ async def init_db():
         await db.execute('''
             ALTER TABLE squads ADD COLUMN IF NOT EXISTS column_index INTEGER NOT NULL DEFAULT 0
         ''')
+        await db.execute("ALTER TABLE squads ADD COLUMN IF NOT EXISTS notes TEXT")
         # Hard cleanup: drop old sheet-based columns once migrated.
         await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_url")
         await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_id")
@@ -532,6 +533,89 @@ async def create_operation_v2(
             return row["id"]
 
 
+async def update_operation_name(operation_id: int, name: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            "UPDATE operations SET name = $1 WHERE id = $2",
+            name,
+            operation_id,
+        )
+        return int(result.split()[-1]) > 0
+
+
+async def copy_operation_v2(source_operation_id: int, new_name: str, activate: bool = False) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        async with db.transaction():
+            source_op = await db.fetchrow("SELECT * FROM operations WHERE id = $1", source_operation_id)
+            if not source_op:
+                raise ValueError("Source operation not found")
+
+            if activate:
+                await db.execute("UPDATE operations SET is_active = 0 WHERE guild_id = $1", source_op["guild_id"])
+
+            new_op = await db.fetchrow(
+                """INSERT INTO operations (
+                     guild_id, name, event_time, reminder_minutes, reminder_fired, is_active,
+                     lane_name_left, lane_name_center, lane_name_right
+                   )
+                   VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)
+                   RETURNING id""",
+                source_op["guild_id"],
+                new_name,
+                source_op["event_time"],
+                source_op["reminder_minutes"],
+                1 if activate else 0,
+                source_op["lane_name_left"] or "Left Wing",
+                source_op["lane_name_center"] or "Center",
+                source_op["lane_name_right"] or "Right Wing",
+            )
+            new_operation_id = int(new_op["id"])
+
+            source_squads = await db.fetch(
+                "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
+                source_operation_id,
+            )
+            squad_map: dict[int, int] = {}
+            for squad in source_squads:
+                inserted = await db.fetchrow(
+                    """INSERT INTO squads (operation_id, name, display_order, column_index, notes)
+                       VALUES ($1, $2, $3, $4, $5)
+                       RETURNING id""",
+                    new_operation_id,
+                    squad["name"],
+                    squad["display_order"],
+                    squad["column_index"] if squad["column_index"] is not None else 0,
+                    squad["notes"],
+                )
+                squad_map[int(squad["id"])] = int(inserted["id"])
+
+            source_slots = await db.fetch(
+                "SELECT * FROM slots WHERE operation_id = $1 ORDER BY display_order, id",
+                source_operation_id,
+            )
+            for slot in source_slots:
+                mapped_squad_id = squad_map.get(int(slot["squad_id"]))
+                if not mapped_squad_id:
+                    continue
+                await db.execute(
+                    """INSERT INTO slots (
+                         operation_id, squad_id, role_name, display_order, team,
+                         assigned_to_member_id, assigned_to_member_name
+                       )
+                       VALUES ($1, $2, $3, $4, $5, NULL, NULL)""",
+                    new_operation_id,
+                    mapped_squad_id,
+                    slot["role_name"],
+                    slot["display_order"],
+                    slot["team"],
+                )
+
+            await _notify_slot_update(db, source_op["guild_id"], new_operation_id, "operation_copied")
+            return new_operation_id
+
+
 async def update_operation_lane_names(
     operation_id: int,
     lane_name_left: Optional[str] = None,
@@ -583,6 +667,7 @@ async def create_squad(
     name: str,
     display_order: Optional[int] = None,
     column_index: Optional[int] = None,
+    notes: Optional[str] = None,
 ) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -594,13 +679,14 @@ async def create_squad(
                 lane,
             )
         row = await db.fetchrow(
-            """INSERT INTO squads (operation_id, name, display_order, column_index)
-               VALUES ($1, $2, $3, $4)
+            """INSERT INTO squads (operation_id, name, display_order, column_index, notes)
+               VALUES ($1, $2, $3, $4, $5)
                RETURNING id""",
             operation_id,
             name,
             display_order,
             lane,
+            notes,
         )
         await _notify_slot_update(db, "", operation_id, "squad_created")
         return row["id"]
@@ -620,8 +706,10 @@ async def update_squad(
     name: Optional[str] = None,
     display_order: Optional[int] = None,
     column_index: Optional[int] = None,
+    notes: Optional[str] = None,
+    set_notes: bool = False,
 ) -> bool:
-    if name is None and display_order is None and column_index is None:
+    if name is None and display_order is None and column_index is None and not set_notes:
         return False
     lane = None if column_index is None else max(0, min(2, int(column_index)))
     pool = await get_pool()
@@ -633,11 +721,14 @@ async def update_squad(
             """UPDATE squads
                SET name = COALESCE($1, name),
                    display_order = COALESCE($2, display_order),
-                   column_index = COALESCE($3, column_index)
-               WHERE id = $4""",
+                   column_index = COALESCE($3, column_index),
+                   notes = CASE WHEN $5 THEN $4 ELSE notes END
+               WHERE id = $6""",
             name,
             display_order,
             lane,
+            notes,
+            set_notes,
             squad_id,
         )
         await _notify_slot_update(db, "", row["operation_id"], "squad_updated")
@@ -823,6 +914,7 @@ async def get_orbat_structure(operation_id: int) -> dict:
             "name": s["name"],
             "display_order": s["display_order"],
             "column_index": s["column_index"] if s["column_index"] is not None else 0,
+            "notes": s["notes"],
             "slots": [],
         }
         for s in squads

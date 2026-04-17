@@ -123,6 +123,7 @@ body {
 
 input,
 select,
+textarea,
 button,
 .button-link {
   border-radius: 10px;
@@ -136,6 +137,13 @@ select {
   min-width: 230px;
   background: #333;
   color: var(--text);
+}
+
+textarea {
+  min-width: 260px;
+  background: #333;
+  color: var(--text);
+  resize: vertical;
 }
 
 input::placeholder {
@@ -255,6 +263,13 @@ button:disabled {
   margin: 0;
   color: var(--accent-strong);
   font-size: 1.2rem;
+}
+
+.squad-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  white-space: pre-wrap;
 }
 
 .squad-actions,
@@ -384,6 +399,7 @@ button:disabled {
 
   input,
   select,
+  textarea,
   button,
   .button-link {
     width: 100%;

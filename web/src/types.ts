@@ -55,6 +55,7 @@ export type Squad = {
   name: string;
   display_order: number;
   column_index: number;
+  notes?: string | null;
   slots: Slot[];
 };
 

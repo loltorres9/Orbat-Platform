@@ -38,12 +38,23 @@ class SquadCreateInput(BaseModel):
     name: str
     display_order: Optional[int] = None
     column_index: Optional[int] = None
+    notes: Optional[str] = None
 
 
 class SquadUpdateInput(BaseModel):
     name: Optional[str] = None
     display_order: Optional[int] = None
     column_index: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class OperationUpdateInput(BaseModel):
+    name: Optional[str] = None
+
+
+class OperationCopyInput(BaseModel):
+    name: str
+    activate: bool = False
 
 
 class SlotCreateInput(BaseModel):
@@ -654,6 +665,56 @@ def create_api_app(bot) -> FastAPI:
         operation = await database.get_operation_by_id(op_id)
         return dict(operation)
 
+    @app.patch("/api/operations/{operation_id}")
+    async def update_operation(
+        operation_id: int,
+        payload: OperationUpdateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        op = await database.get_operation_by_id(operation_id)
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
+        if not _field_was_provided(payload, "name"):
+            raise HTTPException(status_code=400, detail="No operation fields provided.")
+        name = (payload.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Operation name cannot be empty.")
+        success = await database.update_operation_name(operation_id, name)
+        if not success:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await database.emit_slot_update(str(op["guild_id"]), operation_id, "operation_updated")
+        operation = await database.get_operation_by_id(operation_id)
+        return dict(operation)
+
+    @app.post("/api/operations/{operation_id}/copy")
+    async def copy_operation(
+        operation_id: int,
+        payload: OperationCopyInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        source_op = await database.get_operation_by_id(operation_id)
+        if not source_op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(source_op["guild_id"]))
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Copied operation name cannot be empty.")
+        try:
+            new_op_id = await database.copy_operation_v2(
+                source_operation_id=operation_id,
+                new_name=name,
+                activate=payload.activate,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        operation = await database.get_operation_by_id(new_op_id)
+        return dict(operation)
+
     @app.post("/api/operations/{operation_id}/activate")
     async def activate_operation(
         operation_id: int,
@@ -718,6 +779,7 @@ def create_api_app(bot) -> FastAPI:
             name=payload.name,
             display_order=payload.display_order,
             column_index=payload.column_index,
+            notes=(payload.notes.strip() if isinstance(payload.notes, str) and payload.notes.strip() else None),
         )
         return {"id": squad_id}
 
@@ -745,6 +807,8 @@ def create_api_app(bot) -> FastAPI:
             name=payload.name,
             display_order=payload.display_order,
             column_index=payload.column_index,
+            notes=(payload.notes.strip() if isinstance(payload.notes, str) and payload.notes.strip() else None),
+            set_notes=_field_was_provided(payload, "notes"),
         )
         if not success:
             raise HTTPException(status_code=404, detail="Squad not found or no fields updated.")
