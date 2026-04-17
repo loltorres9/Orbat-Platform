@@ -351,8 +351,12 @@ function App() {
   function startDiscordLogin() {
     const loginUrl = discordLoginUrl(undefined, buildAppHashUrl());
     if (isEmbedded) {
-      window.open(loginUrl, "_blank", "noopener,noreferrer");
-      setError("Complete Discord login in the new tab, then return here and refresh.");
+      const popup = window.open(loginUrl, "_blank", "noopener,noreferrer");
+      if (!popup) {
+        setError("Popup was blocked. Use the 'Open Login in New Tab' link below.");
+      } else {
+        setError("Complete Discord login in the new tab, then return here and refresh.");
+      }
       return;
     }
     window.location.href = loginUrl;
@@ -679,9 +683,27 @@ function App() {
               Login with Discord
             </button>
             {isEmbedded ? (
-              <p className="access-note">
-                Embedded mode detected: Discord login opens in a new tab because Discord blocks iframe auth.
-              </p>
+              <>
+                <p className="access-note">
+                  Embedded mode detected: Discord blocks iframe auth. Use a new tab for login.
+                </p>
+                <a
+                  className="button-link"
+                  href={discordLoginUrl(undefined, buildAppHashUrl())}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open Login in New Tab
+                </a>
+                <a
+                  className="button-link ghost-btn"
+                  href={buildAppHashUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open ORBAT in New Tab
+                </a>
+              </>
             ) : null}
             {error && <p className="error">{error}</p>}
           </div>
