@@ -987,30 +987,34 @@ function App() {
             <>
               <div className="admin-section">
                 <h3>Schedule</h3>
-                <div className="row admin-grid-4">
-                  <input
-                    type="datetime-local"
-                    value={scheduleEventTime}
-                    onChange={(e) => setScheduleEventTime(e.target.value)}
-                    placeholder="Event time"
-                  />
-                  <select
-                    value={scheduleReminderMinutes}
-                    onChange={(e) => setScheduleReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
-                  >
-                    <option value={15}>Reminder 15 min before</option>
-                    <option value={30}>Reminder 30 min before</option>
-                    <option value={45}>Reminder 45 min before</option>
-                    <option value={60}>Reminder 60 min before</option>
-                  </select>
-                  <button className="action-btn" onClick={saveOperationSchedule}>Save Event Schedule</button>
-                  <button className="action-btn ghost-btn" onClick={exportOperation}>Export Event</button>
+                <div className="schedule-layout">
+                  <div className="schedule-controls">
+                    <input
+                      type="datetime-local"
+                      value={scheduleEventTime}
+                      onChange={(e) => setScheduleEventTime(e.target.value)}
+                      placeholder="Event time"
+                    />
+                    <select
+                      value={scheduleReminderMinutes}
+                      onChange={(e) => setScheduleReminderMinutes(Number(e.target.value) as 15 | 30 | 45 | 60)}
+                    >
+                      <option value={15}>Reminder 15 min before</option>
+                      <option value={30}>Reminder 30 min before</option>
+                      <option value={45}>Reminder 45 min before</option>
+                      <option value={60}>Reminder 60 min before</option>
+                    </select>
+                  </div>
+                  <div className="schedule-actions">
+                    <button className="action-btn" onClick={saveOperationSchedule}>Save Event Schedule</button>
+                    <button className="action-btn ghost-btn" onClick={exportOperation}>Export Event</button>
+                  </div>
                 </div>
               </div>
 
               <div className="admin-section">
                 <h3>Import Event</h3>
-                <div className="row admin-grid-4">
+                <div className="import-layout">
                   <input
                     value={importNameOverride}
                     onChange={(e) => setImportNameOverride(e.target.value)}
@@ -1026,7 +1030,7 @@ function App() {
                   </label>
                   <button className="action-btn ghost-btn" onClick={importOperation}>Import Event JSON</button>
                 </div>
-                <div className="row">
+                <div className="import-text-row">
                   <textarea
                     value={importJsonText}
                     onChange={(e) => setImportJsonText(e.target.value)}

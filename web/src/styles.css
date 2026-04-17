@@ -148,6 +148,56 @@ body {
   flex: 0 0 auto;
 }
 
+.schedule-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.schedule-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.schedule-controls input,
+.schedule-controls select {
+  min-width: 0;
+  width: 100%;
+}
+
+.schedule-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.import-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.import-layout input {
+  min-width: 0;
+  width: 100%;
+}
+
+.import-layout .inline-check {
+  white-space: nowrap;
+}
+
+.import-text-row {
+  margin-top: 10px;
+}
+
+.import-text-row textarea {
+  width: 100%;
+  min-width: 0;
+}
+
 .login-panel {
   max-width: 520px;
   margin: 70px auto 0;
@@ -479,6 +529,15 @@ button:disabled {
   .admin-grid-4,
   .admin-grid-3 {
     grid-template-columns: 1fr;
+  }
+
+  .schedule-layout,
+  .import-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-actions {
+    flex-direction: column;
   }
 
   input,
