@@ -1,3 +1,4 @@
+import json
 import asyncpg
 import os
 import secrets
@@ -8,10 +9,14 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 _pool = None
 
 
+async def _init_connection(conn):
+    await conn.set_type_codec('jsonb', encoder=json.dumps, decoder=json.loads, schema='pg_catalog')
+
+
 async def get_pool():
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL)
+        _pool = await asyncpg.create_pool(DATABASE_URL, init=_init_connection)
     return _pool
 
 
@@ -659,14 +664,13 @@ async def create_web_session(discord_user_id: str, discord_username: str,
     expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
     pool = await get_pool()
     async with pool.acquire() as db:
-        import json
         await db.execute(
             '''INSERT INTO web_sessions
                (id, discord_user_id, discord_username, discord_avatar,
                 access_token, refresh_token, guilds, expires_at)
                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)''',
             session_id, discord_user_id, discord_username, discord_avatar,
-            access_token, refresh_token, json.dumps(guilds), expires_at,
+            access_token, refresh_token, guilds, expires_at,
         )
     return session_id
 
