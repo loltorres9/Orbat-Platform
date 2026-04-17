@@ -72,8 +72,14 @@ jobs:
             exit 1
           fi
 
-      - name: Install deps
-        run: npm install
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [[ -f package-lock.json ]]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Build
         run: npm run build
