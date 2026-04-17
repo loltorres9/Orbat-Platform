@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import database, sheets
+from utils import database
 
 APPROVAL_CHANNEL_NAME = 'slot-approvals'
 
@@ -23,13 +23,12 @@ def _get_unit_role(member: discord.Member) -> Optional[str]:
     return None
 
 
-def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, event_time=None) -> discord.Embed:
-    """Build a live ORBAT embed grouped by squad, mirroring the sheet's column layout."""
-    # Reservists slots are displayed but excluded from all counts
-    counted = [s for s in all_slots if s['squad'].lower() != 'reservists']
-    filled = sum(1 for s in counted if s['assigned_to'])
-    pending = sum(1 for s in counted if not s['assigned_to'] and (s['row'], s.get('col')) in pending_rows)
-    open_ = sum(1 for s in counted if not s['assigned_to'] and (s['row'], s.get('col')) not in pending_rows)
+def _build_orbat_embed(operation_name: str, all_slots: list, pending_ids: set, event_time=None) -> discord.Embed:
+    """Build a live ORBAT embed grouped by squad."""
+    counted = [s for s in all_slots if s['squad_name'].lower() != 'reservists']
+    filled = sum(1 for s in counted if s['assigned_to_name'])
+    pending = sum(1 for s in counted if not s['assigned_to_name'] and s['id'] in pending_ids)
+    open_ = sum(1 for s in counted if not s['assigned_to_name'] and s['id'] not in pending_ids)
     total = len(counted)
 
     event_line = (
@@ -47,42 +46,37 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, 
     embed.timestamp = discord.utils.utcnow()
     embed.set_footer(text="Last updated")
 
-    # Group slots by squad, tracking first-seen sheet column for layout
     squads: dict[str, list] = {}
-    squad_col: dict[str, int] = {}
+    squad_order: dict[str, int] = {}
     for slot in all_slots:
-        name = slot['squad']
+        name = slot['squad_name']
         squads.setdefault(name, []).append(slot)
-        if name not in squad_col:
-            squad_col[name] = slot.get('col_idx', 0)
+        if name not in squad_order:
+            squad_order[name] = slot['squad_display_order']
 
-    # Sort squads by their column position on the sheet (left → right)
-    ordered = sorted(squads.keys(), key=lambda s: squad_col[s])
+    ordered = sorted(squads.keys(), key=lambda s: squad_order[s])
 
     def _make_value(slots: list) -> str:
         lines = []
         for slot in slots:
-            if slot['assigned_to']:
-                lines.append(f"🔴 {slot['role']} — {slot['assigned_to']}")
-            elif (slot['row'], slot.get('col')) in pending_rows:
-                lines.append(f"🟡 {slot['role']} *(pending)*")
+            if slot['assigned_to_name']:
+                lines.append(f"🔴 {slot['role_name']} — {slot['assigned_to_name']}")
+            elif slot['id'] in pending_ids:
+                lines.append(f"🟡 {slot['role_name']} *(pending)*")
             else:
-                lines.append(f"🟢 {slot['role']}")
+                lines.append(f"🟢 {slot['role_name']}")
         value = '\n'.join(lines)
         return value[:1021] + '...' if len(value) > 1024 else value
 
-    # Split into left / right column groups based on col_idx midpoint
     if len(ordered) > 1:
-        col_values = [squad_col[s] for s in ordered]
+        col_values = [squad_order[s] for s in ordered]
         mid = (min(col_values) + max(col_values)) / 2
-        left = [s for s in ordered if squad_col[s] <= mid]
-        right = [s for s in ordered if squad_col[s] > mid]
+        left = [s for s in ordered if squad_order[s] <= mid]
+        right = [s for s in ordered if squad_order[s] > mid]
     else:
         left, right = ordered, []
 
     if left and right:
-        # Two-column layout: left squad | right squad | blank spacer
-        # Each row uses 3 fields; cap at 8 rows (24 fields) to stay under Discord's 25-field limit.
         max_rows = min(max(len(left), len(right)), 8)
         for i in range(max_rows):
             lname = left[i] if i < len(left) else '\u200b'
@@ -91,9 +85,8 @@ def _build_orbat_embed(operation_name: str, all_slots: list, pending_rows: set, 
             rval = _make_value(squads[rname]) if rname in squads else '\u200b'
             embed.add_field(name=lname, value=lval, inline=True)
             embed.add_field(name=rname, value=rval, inline=True)
-            embed.add_field(name='\u200b', value='\u200b', inline=True)  # spacer
+            embed.add_field(name='\u200b', value='\u200b', inline=True)
     else:
-        # Single column — fall back to 3-per-row inline
         for name in ordered[:25]:
             embed.add_field(name=name, value=_make_value(squads[name]), inline=True)
 
@@ -131,18 +124,14 @@ async def _update_orbat(bot: commands.Bot, guild: discord.Guild, op, raise_error
         return
 
     try:
-        loop = asyncio.get_event_loop()
-        data = await asyncio.wait_for(
-            loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url']),
-            timeout=30,
-        )
+        all_slots = await database.get_orbat_slots(op['id'])
+        pending_ids = set(await database.get_pending_slot_ids(op['id']))
     except Exception as e:
         if raise_errors:
-            raise RuntimeError(f"Failed to load sheet: {e}") from e
+            raise RuntimeError(f"Failed to load ORBAT: {e}") from e
         return
 
-    pending_rows = set(await database.get_pending_slots(op['id']))
-    embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
+    embed = _build_orbat_embed(op['name'], all_slots, pending_ids, op['event_time'])
 
     try:
         await msg.edit(embed=embed, view=OrbatRequestButton(bot))
@@ -188,10 +177,9 @@ async def _process_slot_selection(
     Validate and submit a slot request. Handles all DB writes, approval post,
     DM, and ORBAT refresh. Caller must NOT have deferred the interaction yet.
     """
-    pending = set(await database.get_pending_slots(operation_id))
-    approved = set(await database.get_approved_slots(operation_id))
+    approved = set(await database.get_approved_slot_ids(operation_id))
 
-    if (slot['row'], slot.get('col')) in approved:
+    if slot['id'] in approved:
         await interaction.response.send_message(
             "❌ That slot was just filled. Please choose another.", ephemeral=True
         )
@@ -215,8 +203,7 @@ async def _process_slot_selection(
         member_id=str(interaction.user.id),
         member_name=interaction.user.display_name,
         slot_label=slot['label'],
-        sheet_row=slot['row'],
-        sheet_col=slot.get('col'),
+        slot_id=slot['id'],
         unit_role=unit_role,
     )
 
@@ -338,8 +325,8 @@ class SquadSelectView(discord.ui.View):
         squads: dict,
         all_slots: list,
         operation_id: int,
-        pending_rows: set,
-        approved_rows: set,
+        pending_ids: set,
+        approved_ids: set,
         bot: commands.Bot,
         on_select=None,
     ):
@@ -347,15 +334,15 @@ class SquadSelectView(discord.ui.View):
         self.squads = squads
         self.all_slots = all_slots
         self.operation_id = operation_id
-        self.pending_rows = pending_rows
-        self.approved_rows = approved_rows
+        self.pending_ids = pending_ids
+        self.approved_ids = approved_ids
         self.bot = bot
-        self.on_select = on_select  # optional async callable(interaction, slot)
+        self.on_select = on_select
 
         options = []
         for squad_name, slots in squads.items():
-            open_c = sum(1 for s in slots if (s['row'], s.get('col')) not in pending_rows)
-            pend_c = sum(1 for s in slots if (s['row'], s.get('col')) in pending_rows)
+            open_c = sum(1 for s in slots if s['id'] not in pending_ids)
+            pend_c = sum(1 for s in slots if s['id'] in pending_ids)
             parts = []
             if open_c:
                 parts.append(f"🟢 {open_c} open")
@@ -385,8 +372,8 @@ class SquadSelectView(discord.ui.View):
             slots=squad_slots,
             all_slots=self.all_slots,
             operation_id=self.operation_id,
-            pending_rows=self.pending_rows,
-            approved_rows=self.approved_rows,
+            pending_ids=self.pending_ids,
+            approved_ids=self.approved_ids,
             bot=self.bot,
             on_select=self.on_select,
         )
@@ -405,28 +392,28 @@ class SlotSelectView(discord.ui.View):
         slots: list,
         all_slots: list,
         operation_id: int,
-        pending_rows: set,
-        approved_rows: set,
+        pending_ids: set,
+        approved_ids: set,
         bot: commands.Bot,
         on_select=None,
     ):
         super().__init__(timeout=300)
         self.squad_name = squad_name
         self.all_slots = all_slots
-        self.slots_by_value = {s['value']: s for s in slots}
+        self.slots_by_value = {str(s['id']): s for s in slots}
         self.operation_id = operation_id
-        self.pending_rows = pending_rows
-        self.approved_rows = approved_rows
+        self.pending_ids = pending_ids
+        self.approved_ids = approved_ids
         self.bot = bot
-        self.on_select = on_select  # optional async callable(interaction, slot)
+        self.on_select = on_select
 
         options = []
         for slot in slots[:25]:
-            emoji = '🟡' if (slot['row'], slot.get('col')) in pending_rows else '🟢'
-            status = 'Also requested — compete for slot' if (slot['row'], slot.get('col')) in pending_rows else 'Available'
+            emoji = '🟡' if slot['id'] in pending_ids else '🟢'
+            status = 'Also requested — compete for slot' if slot['id'] in pending_ids else 'Available'
             options.append(discord.SelectOption(
-                label=slot['role'][:100],
-                value=slot['value'],
+                label=slot['role_name'][:100],
+                value=str(slot['id']),
                 description=status,
                 emoji=emoji,
             ))
@@ -458,17 +445,16 @@ class SlotSelectView(discord.ui.View):
             await _process_slot_selection(interaction, slot, self.operation_id, self.bot)
 
     async def _go_back(self, interaction: discord.Interaction):
-        # Re-fetch to pick up any changes while the user was browsing
-        pending_rows = set(await database.get_pending_slots(self.operation_id))
-        approved_rows = set(await database.get_approved_slots(self.operation_id))
-        available = [s for s in self.all_slots if (s['row'], s.get('col')) not in approved_rows]
+        pending_ids = set(await database.get_pending_slot_ids(self.operation_id))
+        approved_ids = set(await database.get_approved_slot_ids(self.operation_id))
+        available = [s for s in self.all_slots if s['id'] not in approved_ids]
 
         squads: dict = {}
         for slot in available:
-            squads.setdefault(slot['squad'], []).append(slot)
+            squads.setdefault(slot['squad_name'], []).append(slot)
 
         view = SquadSelectView(
-            squads, self.all_slots, self.operation_id, pending_rows, approved_rows, self.bot,
+            squads, self.all_slots, self.operation_id, pending_ids, approved_ids, self.bot,
             on_select=self.on_select,
         )
         await interaction.response.edit_message(content='Select your squad:', view=view)
@@ -596,37 +582,22 @@ class ApprovalView(discord.ui.View):
             )
             return
 
-        await database.approve_request(self.request_id, interaction.user.display_name)
-
-        # Update Google Sheet — roll back approval if the sheet write fails
-        op = await database.get_active_operation(str(interaction.guild_id))
-        if op:
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None,
-                    sheets.assign_slot,
-                    op['sheet_id'],
-                    req['sheet_row'],
-                    req['sheet_col'],
-                    req['member_name'],
-                    req['unit_role'],
-                )
-            except Exception as e:
-                # Roll back so the slot doesn't get stuck in approved limbo
-                await database.deny_request(
-                    self.request_id, interaction.user.display_name, reason='Sheet update failed — please re-approve'
-                )
+        # Assign the slot in the database
+        if req.get('slot_id'):
+            assigned = await database.assign_slot_to_member(
+                req['slot_id'], req['member_id'], req['member_name']
+            )
+            if not assigned:
                 await interaction.response.send_message(
-                    f"⚠️ Sheet update failed: `{e}`\n"
-                    "The request has been reset to denied so the slot stays open — please try approving again.",
-                    ephemeral=True,
+                    "❌ Slot was already filled by someone else.", ephemeral=True
                 )
                 return
 
-        # Acknowledge the interaction first (Discord requires a response within 3 s)
+        await database.approve_request(self.request_id, interaction.user.display_name)
+        op = await database.get_active_operation(str(interaction.guild_id))
+
         await interaction.response.send_message(
-            "✅ Request approved and sheet updated!", ephemeral=True
+            "✅ Request approved!", ephemeral=True
         )
 
         # Remove the request from #slot-approvals
@@ -674,9 +645,9 @@ class ApprovalView(discord.ui.View):
             pass
 
         # Auto-deny any competing requests for the same slot
-        if op:
+        if op and req.get('slot_id'):
             competitors = await database.get_competing_requests(
-                op['id'], req['sheet_row'], req['sheet_col'], self.request_id
+                op['id'], req['slot_id'], self.request_id
             )
             for comp in competitors:
                 await database.deny_request(
@@ -791,26 +762,15 @@ class OrbatRequestButton(discord.ui.View):
                 return
 
             try:
-                loop = asyncio.get_event_loop()
-                data = await asyncio.wait_for(
-                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                    timeout=30.0,
-                )
-            except asyncio.TimeoutError:
-                await interaction.followup.send(
-                    "❌ Timed out loading the sheet. Try again in a moment.",
-                    ephemeral=True,
-                )
-                return
+                available = await database.get_available_slots(op['id'])
             except Exception as e:
                 await interaction.followup.send(
                     f"❌ Failed to load slots: `{e}`", ephemeral=True
                 )
                 return
 
-            pending_rows = set(await database.get_pending_slots(op['id']))
-            approved_rows = set(await database.get_approved_slots(op['id']))
-            available = [s for s in data['slots'] if (s['row'], s.get('col')) not in approved_rows]
+            pending_ids = set(await database.get_pending_slot_ids(op['id']))
+            approved_ids = set(await database.get_approved_slot_ids(op['id']))
 
             if not available:
                 await interaction.followup.send(
@@ -818,24 +778,28 @@ class OrbatRequestButton(discord.ui.View):
                 )
                 return
 
-            open_count = sum(1 for s in available if (s['row'], s.get('col')) not in pending_rows)
-            pending_count = sum(1 for s in available if (s['row'], s.get('col')) in pending_rows)
+            # Add computed fields for the picker views
+            for s in available:
+                s['label'] = f"{s['squad_name']} \u2013 {s['role_name']}"
+
+            open_count = sum(1 for s in available if s['id'] not in pending_ids)
+            pending_count = sum(1 for s in available if s['id'] in pending_ids)
 
             squads: dict = {}
             for s in available:
-                squads.setdefault(s['squad'], []).append(s)
+                squads.setdefault(s['squad_name'], []).append(s)
 
             view = SquadSelectView(
                 squads=squads,
                 all_slots=available,
                 operation_id=op['id'],
-                pending_rows=pending_rows,
-                approved_rows=approved_rows,
+                pending_ids=pending_ids,
+                approved_ids=approved_ids,
                 bot=self.bot,
             )
             await interaction.followup.send(
                 content=(
-                    f"🎖️ **{data['operation_name']} — Slot Request**\n"
+                    f"🎖️ **{op['name']} — Slot Request**\n"
                     f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending\n\n"
                     "Select your squad:"
                 ),
@@ -886,51 +850,43 @@ class SlotsCog(commands.Cog):
                 return
 
             try:
-                loop = asyncio.get_event_loop()
-                data = await asyncio.wait_for(
-                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                    timeout=30.0,
-                )
-            except asyncio.TimeoutError:
-                await interaction.followup.send(
-                    "❌ Timed out loading the sheet (>30 s). Check that the sheet is shared with the service account and try again.",
-                    ephemeral=True,
-                )
-                return
+                available = await database.get_available_slots(op['id'])
             except Exception as e:
                 await interaction.followup.send(
-                    f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
+                    f"❌ Failed to load slots: `{e}`", ephemeral=True
                 )
                 return
 
-            pending_rows = set(await database.get_pending_slots(op['id']))
-            approved_rows = set(await database.get_approved_slots(op['id']))
+            pending_ids = set(await database.get_pending_slot_ids(op['id']))
+            approved_ids = set(await database.get_approved_slot_ids(op['id']))
 
-            available = [s for s in data['slots'] if (s['row'], s.get('col')) not in approved_rows]
             if not available:
                 await interaction.followup.send(
                     "❌ All slots are filled for this operation.", ephemeral=True
                 )
                 return
 
-            open_count = sum(1 for s in available if (s['row'], s.get('col')) not in pending_rows)
-            pending_count = sum(1 for s in available if (s['row'], s.get('col')) in pending_rows)
+            for s in available:
+                s['label'] = f"{s['squad_name']} \u2013 {s['role_name']}"
+
+            open_count = sum(1 for s in available if s['id'] not in pending_ids)
+            pending_count = sum(1 for s in available if s['id'] in pending_ids)
 
             squads: dict = {}
             for s in available:
-                squads.setdefault(s['squad'], []).append(s)
+                squads.setdefault(s['squad_name'], []).append(s)
 
             view = SquadSelectView(
                 squads=squads,
                 all_slots=available,
                 operation_id=op['id'],
-                pending_rows=pending_rows,
-                approved_rows=approved_rows,
+                pending_ids=pending_ids,
+                approved_ids=approved_ids,
                 bot=self.bot,
             )
             await interaction.followup.send(
                 content=(
-                    f"🎖️ **{data['operation_name']} — Slot Request**\n"
+                    f"🎖️ **{op['name']} — Slot Request**\n"
                     f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending\n\n"
                     "Select your squad:"
                 ),
@@ -1032,26 +988,9 @@ class SlotsCog(commands.Cog):
                 self.confirmed = True
                 self.stop()
 
-                # Cancel the old request
                 if existing['status'] == 'approved':
-                    # Clear the sheet cell too
-                    try:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(
-                            None,
-                            sheets.clear_slot,
-                            op['sheet_id'],
-                            existing['sheet_row'],
-                            existing['sheet_col'],
-                            existing['member_name'],
-                        )
-                    except Exception as e:
-                        await btn_interaction.response.send_message(
-                            f"⚠️ Could not clear the slot from the sheet: `{e}`\n"
-                            "Please ask an admin to clear it manually, then retry.",
-                            ephemeral=True,
-                        )
-                        return
+                    if existing.get('slot_id'):
+                        await database.unassign_slot(existing['slot_id'])
                     await database.cancel_request_by_id(existing['id'])
                 else:
                     await database.cancel_member_request(
@@ -1059,28 +998,16 @@ class SlotsCog(commands.Cog):
                     )
                     asyncio.create_task(_void_approval_message(bot_ref, btn_interaction.guild, existing))
 
-                # Now load available slots and show the picker
                 try:
-                    loop = asyncio.get_event_loop()
-                    data = await asyncio.wait_for(
-                        loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                        timeout=30.0,
-                    )
-                except asyncio.TimeoutError:
-                    await btn_interaction.response.send_message(
-                        "❌ Timed out loading the sheet. Please try `/request-slot` in a moment.",
-                        ephemeral=True,
-                    )
-                    return
+                    available = await database.get_available_slots(op['id'])
                 except Exception as e:
                     await btn_interaction.response.send_message(
                         f"❌ Failed to load slots: `{e}`", ephemeral=True
                     )
                     return
 
-                pending_rows = set(await database.get_pending_slots(op['id']))
-                approved_rows = set(await database.get_approved_slots(op['id']))
-                available = [s for s in data['slots'] if (s['row'], s.get('col')) not in approved_rows]
+                pending_ids = set(await database.get_pending_slot_ids(op['id']))
+                approved_ids = set(await database.get_approved_slot_ids(op['id']))
 
                 if not available:
                     await btn_interaction.response.send_message(
@@ -1089,24 +1016,27 @@ class SlotsCog(commands.Cog):
                     asyncio.create_task(_update_orbat(bot_ref, btn_interaction.guild, op))
                     return
 
-                open_count = sum(1 for s in available if (s['row'], s.get('col')) not in pending_rows)
-                pending_count = sum(1 for s in available if (s['row'], s.get('col')) in pending_rows)
+                for s in available:
+                    s['label'] = f"{s['squad_name']} \u2013 {s['role_name']}"
+
+                open_count = sum(1 for s in available if s['id'] not in pending_ids)
+                pending_count = sum(1 for s in available if s['id'] in pending_ids)
 
                 squads: dict = {}
                 for s in available:
-                    squads.setdefault(s['squad'], []).append(s)
+                    squads.setdefault(s['squad_name'], []).append(s)
 
                 picker_view = SquadSelectView(
                     squads=squads,
                     all_slots=available,
                     operation_id=op['id'],
-                    pending_rows=pending_rows,
-                    approved_rows=approved_rows,
+                    pending_ids=pending_ids,
+                    approved_ids=approved_ids,
                     bot=bot_ref,
                 )
                 await btn_interaction.response.send_message(
                     content=(
-                        f"🎖️ **{data['operation_name']} — Pick a New Slot**\n"
+                        f"🎖️ **{op['name']} — Pick a New Slot**\n"
                         f"🟢 **{open_count}** open  ·  🟡 **{pending_count}** pending\n\n"
                         "Select your squad:"
                     ),
@@ -1168,23 +1098,8 @@ class SlotsCog(commands.Cog):
                 self.stop()
 
                 if existing['status'] == 'approved':
-                    try:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(
-                            None,
-                            sheets.clear_slot,
-                            op['sheet_id'],
-                            existing['sheet_row'],
-                            existing['sheet_col'],
-                            existing['member_name'],
-                        )
-                    except Exception as e:
-                        await btn_interaction.response.send_message(
-                            f"⚠️ Could not clear the slot from the sheet: `{e}`\n"
-                            "Please ask an admin to clear it manually.",
-                            ephemeral=True,
-                        )
-                        return
+                    if existing.get('slot_id'):
+                        await database.unassign_slot(existing['slot_id'])
                     await database.cancel_request_by_id(existing['id'])
                 else:
                     await database.cancel_member_request(
@@ -1227,16 +1142,15 @@ class SlotsCog(commands.Cog):
         target = channel or interaction.channel
 
         try:
-            loop = asyncio.get_event_loop()
-            data = await loop.run_in_executor(None, sheets.load_all_slots, op['sheet_url'])
+            all_slots = await database.get_orbat_slots(op['id'])
         except Exception as e:
             await interaction.followup.send(
-                f"❌ Failed to load slots from sheet: `{e}`", ephemeral=True
+                f"❌ Failed to load slots: `{e}`", ephemeral=True
             )
             return
 
-        pending_rows = set(await database.get_pending_slots(op['id']))
-        embed = _build_orbat_embed(data['operation_name'], data['slots'], pending_rows, op['event_time'])
+        pending_ids = set(await database.get_pending_slot_ids(op['id']))
+        embed = _build_orbat_embed(op['name'], all_slots, pending_ids, op['event_time'])
 
         msg = await target.send(embed=embed, view=OrbatRequestButton(self.bot))
         await database.save_orbat_message(

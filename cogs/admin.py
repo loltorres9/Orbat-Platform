@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils import database, sheets
+from utils import database
 from cogs.slots import _build_orbat_embed, _get_unit_role, _update_orbat, _void_approval_message, OrbatRequestButton, SquadSelectView
 
 UNIT_LEADER_ROLE = 'Unit Leader'
@@ -69,11 +69,11 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='setup-slots',
-        description='Load slots from a Google Sheet for the current operation (Admin only)',
+        description='Create a new operation or show the web builder link (Admin only)',
     )
     @app_commands.describe(
-        sheet_url='Full Google Sheets URL for this operation',
-        event_time='Event start time in UTC, e.g. 25/06/2025 19:00',
+        name='Operation name',
+        event_time='Event start time, e.g. 25/06/2025 19:00',
         reminder_minutes='Send reminders this many minutes before the event (15, 30, or 60)',
     )
     @app_commands.choices(reminder_minutes=[
@@ -85,7 +85,7 @@ class AdminCog(commands.Cog):
     async def setup_slots(
         self,
         interaction: discord.Interaction,
-        sheet_url: str,
+        name: str,
         event_time: str = None,
         reminder_minutes: int = 30,
     ):
@@ -101,37 +101,9 @@ class AdminCog(commands.Cog):
                 return
 
         try:
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, sheets.load_slots, sheet_url),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "❌ Timed out reading the sheet (30s). Make sure it's shared with the service account.",
-                ephemeral=True,
-            )
-            return
-        except ValueError as e:
-            await interaction.followup.send(f"❌ {e}", ephemeral=True)
-            return
-        except Exception as e:
-            await interaction.followup.send(
-                f"❌ Failed to read the sheet. Make sure you've shared it with the service account.\n`{e}`",
-                ephemeral=True,
-            )
-            return
-
-        try:
             op_id = await database.create_operation(
                 guild_id=str(interaction.guild_id),
-                name=data['operation_name'],
-                sheet_url=sheet_url,
-                sheet_id=data['sheet_id'],
-                squad_col=data['squad_col'],
-                role_col=data['role_col'],
-                status_col=data['status_col'],
-                assigned_col=data['assigned_col'],
+                name=name,
             )
             if parsed_event_time:
                 await database.set_event_time(op_id, parsed_event_time, reminder_minutes)
@@ -139,53 +111,25 @@ class AdminCog(commands.Cog):
             await interaction.followup.send(f"❌ Database error: `{e}`", ephemeral=True)
             return
 
-        slot_count = len(data['slots'])
         event_line = (
             f"\n🕐 Event time: <t:{int(parsed_event_time.timestamp())}:F> "
             f"(reminder {reminder_minutes} min before)"
             if parsed_event_time else ""
         )
+        import os
+        frontend_url = os.getenv('FRONTEND_URL', '')
+        builder_link = f"\n\n🔧 [Open ORBAT Builder]({frontend_url}/builder/{op_id})" if frontend_url else ""
+
         confirm_embed = discord.Embed(
-            title='✅ Operation Loaded',
+            title='✅ Operation Created',
             description=(
-                f"**{data['operation_name']}**\n"
-                f"Found **{slot_count}** available slot(s).\n"
+                f"**{name}** (ID: {op_id})\n"
                 f"{event_line}\n\n"
-                f"Members can now use `/request-slot` to sign up."
+                f"Use the web builder to add squads and slots, then run `/post-orbat` to display it."
+                f"{builder_link}"
             ),
             color=discord.Color.green(),
         )
-
-        # Auto-post ORBAT to #orbat (create channel if needed)
-        orbat_channel = discord.utils.get(
-            interaction.guild.text_channels, name=ORBAT_CHANNEL_NAME
-        )
-        if not orbat_channel:
-            try:
-                orbat_channel = await interaction.guild.create_text_channel(
-                    ORBAT_CHANNEL_NAME,
-                    topic='Live ORBAT for the current operation',
-                )
-            except discord.Forbidden:
-                orbat_channel = None
-
-        if orbat_channel:
-            try:
-                op = await database.get_active_operation(str(interaction.guild_id))
-                loop = asyncio.get_event_loop()
-                all_data = await asyncio.wait_for(
-                    loop.run_in_executor(None, sheets.load_all_slots, sheet_url),
-                    timeout=30,
-                )
-                pending_rows = set(await database.get_pending_slots(op['id']))
-                orbat_embed = _build_orbat_embed(all_data['operation_name'], all_data['slots'], pending_rows, parsed_event_time)
-                msg = await orbat_channel.send(embed=orbat_embed, view=OrbatRequestButton(self.bot))
-                await database.save_orbat_message(
-                    str(interaction.guild_id), str(orbat_channel.id), str(msg.id)
-                )
-                confirm_embed.description += f"\n\n📋 ORBAT posted to {orbat_channel.mention}."
-            except Exception:
-                pass  # ORBAT post failure is non-fatal
 
         await interaction.followup.send(embed=confirm_embed, ephemeral=True)
 
@@ -255,24 +199,8 @@ class AdminCog(commands.Cog):
                 )
                 return
 
-            # Only clear the sheet cell for approved slots (sheet is only written on approval)
-            if req['status'] == 'approved':
-                try:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        None,
-                        sheets.clear_slot,
-                        op['sheet_id'],
-                        req['sheet_row'],
-                        req['sheet_col'],
-                        req['member_name'],
-                    )
-                except Exception as e:
-                    await sel_interaction.response.send_message(
-                        f"⚠️ Could not update the sheet: `{e}`\nPlease clear it manually.",
-                        ephemeral=True,
-                    )
-                    return
+            if req['status'] == 'approved' and req.get('slot_id'):
+                await database.unassign_slot(req['slot_id'])
 
             await database.cancel_request_by_id(request_id)
 
@@ -309,7 +237,7 @@ class AdminCog(commands.Cog):
 
     @app_commands.command(
         name='debug-slots',
-        description='Show raw slot data the bot reads from the sheet — use to diagnose missing slots (Admin only)',
+        description='Show raw slot data from the database — use to diagnose missing slots (Admin only)',
     )
     @app_commands.describe(squad='Filter to a specific squad name (optional)')
     @app_commands.default_permissions(manage_guild=True)
@@ -319,33 +247,25 @@ class AdminCog(commands.Cog):
         if not op:
             await interaction.followup.send("❌ No active operation.", ephemeral=True)
             return
-        try:
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                timeout=30,
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ Failed to load sheet: `{e}`", ephemeral=True)
-            return
 
-        slots = data['slots']
+        all_slots = await database.get_orbat_slots(op['id'])
+        available = [s for s in all_slots if not s['assigned_to_member_id']]
+
         if squad:
-            slots = [s for s in slots if squad.lower() in s['squad'].lower()]
+            available = [s for s in available if squad.lower() in s['squad_name'].lower()]
 
-        if not slots:
+        if not available:
             await interaction.followup.send(
-                f"No available slots found{f' for squad matching `{squad}`' if squad else ''}.\n"
-                "This means `load_slots` found no `<Insert Name>` cells on the sheet.",
+                f"No available slots found{f' for squad matching `{squad}`' if squad else ''}.",
                 ephemeral=True,
             )
             return
 
-        lines = [f"**{len(slots)} available slot(s) found** (sheet → bot view):\n"]
-        for s in slots[:40]:
-            lines.append(f"`r{s['row']}c{s.get('col')}` **{s['squad']}** — {s['role']}")
-        if len(slots) > 40:
-            lines.append(f"_…and {len(slots) - 40} more_")
+        lines = [f"**{len(available)} available slot(s) found:**\n"]
+        for s in available[:40]:
+            lines.append(f"`slot:{s['id']}` **{s['squad_name']}** — {s['role_name']}")
+        if len(available) > 40:
+            lines.append(f"_…and {len(available) - 40} more_")
 
         await interaction.followup.send('\n'.join(lines), ephemeral=True)
 
@@ -363,9 +283,12 @@ class AdminCog(commands.Cog):
             )
             return
 
+        desc = f"**{op['name']}** (ID: {op['id']})"
+        if op.get('description'):
+            desc += f"\n{op['description']}"
         embed = discord.Embed(
             title='🎖️ Current Operation',
-            description=f"**{op['name']}**\n[View Sheet]({op['sheet_url']})",
+            description=desc,
             color=discord.Color.blurple(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -503,39 +426,30 @@ class AdminCog(commands.Cog):
             return
 
         try:
-            loop = asyncio.get_event_loop()
-            data = await asyncio.wait_for(
-                loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                timeout=30,
-            )
-        except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "❌ Timed out loading the sheet (30s). Make sure it's shared with the service account.",
-                ephemeral=True,
-            )
-            return
+            available = await database.get_available_slots(op['id'])
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to load slots: `{e}`", ephemeral=True)
             return
 
-        pending_rows = set(await database.get_pending_slots(op['id']))
-        approved_rows = set(await database.get_approved_slots(op['id']))
-        available = [s for s in data['slots'] if (s['row'], s.get('col')) not in approved_rows]
+        pending_ids = set(await database.get_pending_slot_ids(op['id']))
+        approved_ids = set(await database.get_approved_slot_ids(op['id']))
 
         if not available:
             await interaction.followup.send("ℹ️ All slots are currently filled.", ephemeral=True)
             return
 
+        for s in available:
+            s['label'] = f"{s['squad_name']} \u2013 {s['role_name']}"
+
         squads: dict = {}
         for s in available:
-            squads.setdefault(s['squad'], []).append(s)
+            squads.setdefault(s['squad_name'], []).append(s)
 
         bot_ref = self.bot
 
         async def _on_slot_selected(sel_interaction: discord.Interaction, slot: dict):
-            # Re-check at selection time
-            current_approved = set(await database.get_approved_slots(op['id']))
-            if (slot['row'], slot.get('col')) in current_approved:
+            current_approved = set(await database.get_approved_slot_ids(op['id']))
+            if slot['id'] in current_approved:
                 await sel_interaction.response.send_message(
                     "❌ That slot was just filled. Please pick another.", ephemeral=True
                 )
@@ -543,34 +457,22 @@ class AdminCog(commands.Cog):
 
             await sel_interaction.response.defer(ephemeral=True)
 
-            # Write to sheet
-            try:
-                unit_role = _get_unit_role(member)
-                await loop.run_in_executor(
-                    None,
-                    sheets.assign_slot,
-                    op['sheet_id'],
-                    slot['row'],
-                    slot.get('col'),
-                    member.display_name,
-                    unit_role,
-                )
-            except Exception as e:
+            assigned = await database.assign_slot_to_member(
+                slot['id'], str(member.id), member.display_name
+            )
+            if not assigned:
                 await sel_interaction.followup.send(
-                    f"⚠️ Could not update the sheet: `{e}`\nPlease update it manually.",
-                    ephemeral=True,
+                    "❌ Slot was already taken.", ephemeral=True
                 )
                 return
 
-            # Record directly as approved
             request_id = await database.create_request(
                 guild_id=str(sel_interaction.guild_id),
                 operation_id=op['id'],
                 member_id=str(member.id),
                 member_name=member.display_name,
                 slot_label=slot['label'],
-                sheet_row=slot['row'],
-                sheet_col=slot.get('col'),
+                slot_id=slot['id'],
                 unit_role=_get_unit_role(member),
             )
             await database.approve_request(request_id, sel_interaction.user.display_name)
@@ -595,8 +497,8 @@ class AdminCog(commands.Cog):
             squads=squads,
             all_slots=available,
             operation_id=op['id'],
-            pending_rows=pending_rows,
-            approved_rows=approved_rows,
+            pending_ids=pending_ids,
+            approved_ids=approved_ids,
             bot=self.bot,
             on_select=_on_slot_selected,
         )
@@ -762,44 +664,14 @@ class AdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         synced = await self.bot.tree.sync(guild=interaction.guild)
 
-        # Repair any pending requests with stale sheet_col, then refresh the ORBAT
         op = await database.get_active_operation(str(interaction.guild_id))
         orbat_note = ""
         if op:
-            repair_notes = []
-            try:
-                loop = asyncio.get_event_loop()
-                data = await asyncio.wait_for(
-                    loop.run_in_executor(None, sheets.load_slots, op['sheet_url']),
-                    timeout=30,
-                )
-                label_to_slot = {s['label']: s for s in data['slots']}
-                active = await database.get_active_requests(op['id'])
-                repaired = 0
-                for req in active:
-                    correct = label_to_slot.get(req['slot_label'])
-                    if correct and (
-                        req['sheet_row'] != correct['row']
-                        or req['sheet_col'] != correct.get('col')
-                    ):
-                        await database.update_request_sheet_col(
-                            req['id'], correct['row'], correct['col']
-                        )
-                        repaired += 1
-                if repaired:
-                    repair_notes.append(f"Repaired **{repaired}** pending request(s).")
-            except Exception as e:
-                repair_notes.append(f"⚠️ Repair step failed: `{e}`")
-
-            # Refresh ORBAT directly (awaited so errors surface)
             try:
                 await _update_orbat(self.bot, interaction.guild, op, raise_errors=True)
                 orbat_note = "\n📋 ORBAT refreshed."
             except Exception as e:
                 orbat_note = f"\n⚠️ ORBAT refresh failed: `{e}`"
-
-            if repair_notes:
-                orbat_note += " " + " ".join(repair_notes)
 
         await interaction.followup.send(
             f"✅ Synced **{len(synced)}** command(s) to this server.{orbat_note}",

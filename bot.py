@@ -3,6 +3,7 @@ import os
 from datetime import timezone
 
 import discord
+import uvicorn
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -45,9 +46,6 @@ class ORBATBot(commands.Bot):
         registered = [c.name for c in self.tree.get_commands()]
         print(f"Commands registered in tree: {registered}")
 
-        # Re-register approval views for all pending requests so buttons
-        # continue to work after a bot restart.
-        # Persistent ORBAT request button — one instance covers all guilds
         self.add_view(OrbatRequestButton(bot=self))
 
         pending = await database.get_all_pending_requests()
@@ -78,7 +76,6 @@ class ORBATBot(commands.Bot):
             if not guild:
                 continue
 
-            # DM each approved member
             for member_id, slot_label in members:
                 try:
                     member = await guild.fetch_member(int(member_id))
@@ -91,7 +88,6 @@ class ORBATBot(commands.Bot):
                 except (discord.Forbidden, discord.NotFound):
                     pass
 
-            # Ping all approved members in #orbat
             orbat_channel = discord.utils.get(guild.text_channels, name='orbat')
             if orbat_channel:
                 mentions = ' '.join(
@@ -111,8 +107,6 @@ class ORBATBot(commands.Bot):
 
     async def on_ready(self):
         print(f"on_ready fired. Guilds: {[g.name for g in self.guilds]}")
-        # Copy global commands into each guild and sync — this is instant,
-        # unlike global sync which can take up to an hour to propagate.
         for guild in self.guilds:
             try:
                 self.tree.copy_global_to(guild=guild)
@@ -121,9 +115,7 @@ class ORBATBot(commands.Bot):
             except Exception as e:
                 print(f"❌ Guild sync failed for '{guild.name}': {e}")
 
-
     async def on_guild_join(self, guild: discord.Guild):
-        """Sync commands when the bot is added to a new server while already running."""
         try:
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
@@ -132,13 +124,31 @@ class ORBATBot(commands.Bot):
             print(f"❌ Guild sync failed for '{guild.name}': {e}")
 
 
-def main():
+async def run_bot_and_web():
     token = os.getenv('DISCORD_TOKEN')
     if not token:
         raise RuntimeError("DISCORD_TOKEN is not set. Check your .env file or Railway variables.")
 
     bot = ORBATBot()
-    asyncio.run(bot.start(token))
+
+    from web.main import create_app
+    app = create_app(bot)
+
+    port = int(os.getenv('PORT', '8080'))
+    config = uvicorn.Config(app, host='0.0.0.0', port=port, log_level='info')
+    server = uvicorn.Server(config)
+
+    # Run bot and web server concurrently in the same event loop
+    async with bot:
+        await bot.login(token)
+        await asyncio.gather(
+            bot.connect(),
+            server.serve(),
+        )
+
+
+def main():
+    asyncio.run(run_bot_and_web())
 
 
 if __name__ == '__main__':
