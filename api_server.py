@@ -10,7 +10,7 @@ from typing import Optional
 
 import asyncpg
 import httpx
-from fastapi import Cookie, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import Cookie, FastAPI, Header, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -202,10 +202,11 @@ async def _require_guild_admin(app: FastAPI, session, guild_id: str):
     raise HTTPException(status_code=403, detail="Admin access required for this guild.")
 
 
-async def _session_from_token(session_token: Optional[str]):
-    if not session_token:
+async def _session_from_token(session_token: Optional[str], header_token: Optional[str] = None):
+    token = session_token or header_token
+    if not token:
         raise HTTPException(status_code=401, detail="Missing session.")
-    session = await database.get_web_session(session_token)
+    session = await database.get_web_session(token)
     if not session:
         raise HTTPException(status_code=401, detail="Session expired or invalid.")
     return session
@@ -266,12 +267,27 @@ async def _post_approval_request(app: FastAPI, request_id: int, operation, slot,
     await database.update_request_message(request_id, str(message.id), str(approval_channel.id))
 
 
+def _with_session_in_return_to(target_url: str, session_token: str) -> str:
+    try:
+        parsed = urlparse(target_url)
+        if parsed.fragment:
+            fragment = parsed.fragment
+            separator = "&" if "?" in fragment else "?"
+            fragment = f"{fragment}{separator}orbat_session={session_token}"
+            return urlunparse(parsed._replace(fragment=fragment))
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query["orbat_session"] = session_token
+        return urlunparse(parsed._replace(query=urlencode(query)))
+    except Exception:
+        return target_url
+
+
 async def _create_session_from_discord(
     *,
     response: Response,
     code: str,
     guild_id: Optional[str] = None,
-) -> str:
+) -> tuple[str, str, int]:
     token_data, user_data = await _discord_oauth_exchange(code)
     session_token = secrets.token_urlsafe(48)
     expires_in = int(token_data.get("expires_in", 604800))
@@ -302,7 +318,7 @@ async def _create_session_from_discord(
         secure=cookie_secure,
         max_age=expires_in,
     )
-    return user_data["id"]
+    return user_data["id"], session_token, expires_in
 
 
 def _guild_icon_url(guild_id: str, icon_hash: Optional[str]) -> Optional[str]:
@@ -422,9 +438,14 @@ def create_api_app(bot) -> FastAPI:
     async def auth_discord_callback(code: str, state: Optional[str] = None):
         guild_id, return_to = _deserialize_state(state)
         target = return_to or "/"
-        redirect = RedirectResponse(url=target, status_code=302)
         try:
-            await _create_session_from_discord(response=redirect, code=code, guild_id=guild_id)
+            redirect = RedirectResponse(url=target, status_code=302)
+            _user_id, session_token, _expires_in = await _create_session_from_discord(
+                response=redirect,
+                code=code,
+                guild_id=guild_id,
+            )
+            redirect.headers["location"] = _with_session_in_return_to(target, session_token)
             return redirect
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else "oauth_http_error"
@@ -437,21 +458,27 @@ def create_api_app(bot) -> FastAPI:
 
     @app.post("/api/auth/discord/exchange")
     async def auth_exchange(payload: DiscordCodeInput, response: Response):
-        user_id = await _create_session_from_discord(
+        user_id, session_token, expires_in = await _create_session_from_discord(
             response=response,
             code=payload.code,
             guild_id=payload.guild_id,
         )
-        return {"ok": True, "user_id": user_id}
+        return {"ok": True, "user_id": user_id, "session_token": session_token, "expires_in": expires_in}
 
     @app.get("/api/auth/session", response_model=SessionData)
-    async def auth_session(orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def auth_session(
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         return _serialize_session(session)
 
     @app.get("/api/auth/discord/guilds")
-    async def auth_discord_guilds(orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def auth_discord_guilds(
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         access_token = session.get("access_token")
         if not access_token:
             raise HTTPException(status_code=401, detail="Session missing Discord access token. Please login again.")
@@ -486,15 +513,24 @@ def create_api_app(bot) -> FastAPI:
         return items
 
     @app.post("/api/auth/logout")
-    async def auth_logout(response: Response, orbat_session: Optional[str] = Cookie(default=None)):
-        if orbat_session:
-            await database.delete_web_session(orbat_session)
+    async def auth_logout(
+        response: Response,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        token = orbat_session or x_orbat_session
+        if token:
+            await database.delete_web_session(token)
         response.delete_cookie("orbat_session")
         return {"ok": True}
 
     @app.get("/api/guilds/{guild_id}/me/permissions")
-    async def guild_permissions(guild_id: str, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def guild_permissions(
+        guild_id: str,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         is_portal_admin = await database.is_web_admin(guild_id, session["user_id"])
         is_discord_admin = await _discord_member_has_admin_permissions(app, guild_id, session["user_id"])
         return {
@@ -505,8 +541,12 @@ def create_api_app(bot) -> FastAPI:
         }
 
     @app.get("/api/guilds/{guild_id}/admins")
-    async def guild_admins(guild_id: str, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def guild_admins(
+        guild_id: str,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         await _require_guild_admin(app, session, guild_id)
         rows = await database.list_web_admins(guild_id)
         return [dict(row) for row in rows]
@@ -516,8 +556,9 @@ def create_api_app(bot) -> FastAPI:
         guild_id: str,
         payload: AdminUpsertInput,
         orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
     ):
-        session = await _session_from_token(orbat_session)
+        session = await _session_from_token(orbat_session, x_orbat_session)
         await _require_guild_admin(app, session, guild_id)
         await database.upsert_web_admin(
             guild_id=guild_id,
@@ -528,8 +569,13 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.delete("/api/guilds/{guild_id}/admins/{user_id}")
-    async def remove_guild_admin(guild_id: str, user_id: str, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def remove_guild_admin(
+        guild_id: str,
+        user_id: str,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         await _require_guild_admin(app, session, guild_id)
         if user_id == session["user_id"]:
             # Avoid accidental lockout via self-removal.
@@ -554,8 +600,12 @@ def create_api_app(bot) -> FastAPI:
         return [dict(row) for row in rows]
 
     @app.post("/api/operations")
-    async def create_operation(payload: OperationCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def create_operation(
+        payload: OperationCreateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         await _require_guild_admin(app, session, payload.guild_id)
         op_id = await database.create_operation_v2(
             guild_id=payload.guild_id,
@@ -568,8 +618,12 @@ def create_api_app(bot) -> FastAPI:
         return dict(operation)
 
     @app.post("/api/operations/{operation_id}/activate")
-    async def activate_operation(operation_id: int, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def activate_operation(
+        operation_id: int,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
@@ -588,8 +642,13 @@ def create_api_app(bot) -> FastAPI:
         return data
 
     @app.post("/api/operations/{operation_id}/squads")
-    async def create_squad(operation_id: int, payload: SquadCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def create_squad(
+        operation_id: int,
+        payload: SquadCreateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
@@ -598,8 +657,13 @@ def create_api_app(bot) -> FastAPI:
         return {"id": squad_id}
 
     @app.patch("/api/squads/{squad_id}")
-    async def update_squad(squad_id: int, payload: SquadUpdateInput, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def update_squad(
+        squad_id: int,
+        payload: SquadUpdateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         pool = await database.get_pool()
         async with pool.acquire() as db:
             op = await db.fetchrow(
@@ -621,8 +685,12 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.delete("/api/squads/{squad_id}")
-    async def delete_squad(squad_id: int, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def delete_squad(
+        squad_id: int,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         pool = await database.get_pool()
         async with pool.acquire() as db:
             op = await db.fetchrow(
@@ -640,8 +708,13 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/operations/{operation_id}/slots")
-    async def create_slot(operation_id: int, payload: SlotCreateInput, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def create_slot(
+        operation_id: int,
+        payload: SlotCreateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         op = await database.get_operation_by_id(operation_id)
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
@@ -655,8 +728,13 @@ def create_api_app(bot) -> FastAPI:
         return {"id": slot_id}
 
     @app.patch("/api/slots/{slot_id}")
-    async def update_slot(slot_id: int, payload: SlotUpdateInput, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def update_slot(
+        slot_id: int,
+        payload: SlotUpdateInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         slot = await database.get_slot_by_id(slot_id)
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found.")
@@ -675,8 +753,12 @@ def create_api_app(bot) -> FastAPI:
         return {"ok": True}
 
     @app.delete("/api/slots/{slot_id}")
-    async def delete_slot(slot_id: int, orbat_session: Optional[str] = Cookie(default=None)):
-        session = await _session_from_token(orbat_session)
+    async def delete_slot(
+        slot_id: int,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
         slot = await database.get_slot_by_id(slot_id)
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found.")
@@ -694,8 +776,9 @@ def create_api_app(bot) -> FastAPI:
         slot_id: int,
         payload: SlotRequestInput,
         orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
     ):
-        session = await _session_from_token(orbat_session)
+        session = await _session_from_token(orbat_session, x_orbat_session)
         slot = await database.get_slot_by_id(slot_id)
         if not slot:
             raise HTTPException(status_code=404, detail="Slot not found.")

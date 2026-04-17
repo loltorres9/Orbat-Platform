@@ -167,6 +167,20 @@ button:disabled {
   color: var(--accent-2);
 }
 
+.squad-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.squad-actions,
+.slot-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .squad ul {
   list-style: none;
   padding: 0;
@@ -203,6 +217,42 @@ button:disabled {
   background: transparent;
   border: 1px dashed #8994a2;
   color: #c8d1da;
+}
+
+.danger-btn {
+  background: #673338;
+  border-color: #9a4c56;
+  color: #ffe9ec;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: 18px;
+}
+
+.modal-panel {
+  width: min(760px, 100%);
+  background: #151b23;
+  border: 1px solid #3f4a58;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.modal-head h2 {
+  margin: 0;
 }
 
 .error {

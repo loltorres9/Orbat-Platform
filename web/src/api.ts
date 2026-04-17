@@ -1,11 +1,34 @@
 import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, WebAdminEntry } from "./types";
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+const SESSION_STORAGE_KEY = "orbat_session_token";
+
+let sessionToken: string | null = null;
+if (typeof window !== "undefined") {
+  sessionToken = window.localStorage.getItem(SESSION_STORAGE_KEY);
+}
+
+export function setSessionToken(token: string | null) {
+  sessionToken = token;
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, token);
+  } else {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  }
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) || {}),
+  };
+  if (sessionToken) {
+    headers["X-Orbat-Session"] = sessionToken;
+  }
   const res = await fetch(`${API_BASE}${path}`, {
     credentials: "include",
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    headers,
     ...init
   });
   if (!res.ok) {
@@ -43,11 +66,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  deleteSquad: (squadId: number) =>
+    req<{ ok: boolean }>(`/api/squads/${squadId}`, { method: "DELETE" }),
   addSlot: (operationId: number, payload: { squad_id: number; role_name: string; display_order?: number }) =>
     req<{ id: number }>(`/api/operations/${operationId}/slots`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),
+  deleteSlot: (slotId: number) =>
+    req<{ ok: boolean }>(`/api/slots/${slotId}`, { method: "DELETE" }),
   activateOperation: (operationId: number) =>
     req<{ ok: boolean }>(`/api/operations/${operationId}/activate`, { method: "POST" }),
   guildPermissions: (guildId: string) =>

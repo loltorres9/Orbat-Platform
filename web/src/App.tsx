@@ -1,12 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
-import { api, discordLoginUrl, openOperationSocket } from "./api";
-import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, WebAdminEntry } from "./types";
+import { api, discordLoginUrl, openOperationSocket, setSessionToken } from "./api";
+import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, Squad, WebAdminEntry } from "./types";
 
 function App() {
   const basePath = import.meta.env.BASE_URL || "/";
   const buildAppHashUrl = () =>
     `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
-  const getRoute = () => (window.location.hash === "#/app" ? "app" : "login");
+  const getRoute = () => (window.location.hash.startsWith("#/app") ? "app" : "login");
 
   const [route, setRoute] = useState<"login" | "app">(getRoute());
   const [guildId, setGuildId] = useState("");
@@ -20,7 +20,7 @@ function App() {
   const [status, setStatus] = useState("Disconnected");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
 
   const [newOperationName, setNewOperationName] = useState("");
   const [newSquadName, setNewSquadName] = useState("");
@@ -29,6 +29,19 @@ function App() {
   const [newAdminUserId, setNewAdminUserId] = useState("");
   const [newAdminUsername, setNewAdminUsername] = useState("");
 
+  function extractSessionTokenFromHash(): string | null {
+    const hash = window.location.hash || "";
+    const queryIndex = hash.indexOf("?");
+    if (queryIndex < 0) return null;
+    const queryPart = hash.slice(queryIndex + 1);
+    const params = new URLSearchParams(queryPart);
+    const token = params.get("orbat_session");
+    if (!token) return null;
+    const routePart = hash.slice(0, queryIndex);
+    window.location.hash = routePart;
+    return token;
+  }
+
   async function refreshGuildAccess(targetGuildId: string) {
     const perms = await api.guildPermissions(targetGuildId);
     setPermissions(perms);
@@ -36,6 +49,7 @@ function App() {
       setAdmins(await api.listGuildAdmins(targetGuildId));
     } else {
       setAdmins([]);
+      setShowAdminModal(false);
     }
   }
 
@@ -90,6 +104,10 @@ function App() {
     setSelectedGuildId(preferred.id);
   }
 
+  async function reloadOperation(operationId: number) {
+    setOrbat(await api.orbat(operationId));
+  }
+
   useEffect(() => {
     const onHashChange = () => setRoute(getRoute());
     window.addEventListener("hashchange", onHashChange);
@@ -102,6 +120,11 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const token = extractSessionTokenFromHash();
+    if (token) {
+      setSessionToken(token);
+    }
+
     const url = new URL(window.location.href);
     const authError = url.searchParams.get("auth_error");
     if (authError) {
@@ -165,8 +188,7 @@ function App() {
     if (!operation) return;
     const ws = openOperationSocket(operation.id, async () => {
       try {
-        const structure = await api.orbat(operation.id);
-        setOrbat(structure);
+        await reloadOperation(operation.id);
       } catch {
         // no-op
       }
@@ -192,7 +214,7 @@ function App() {
     }
     try {
       await api.requestSlot(slotId, guildId);
-      if (operation) setOrbat(await api.orbat(operation.id));
+      if (operation) await reloadOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -202,6 +224,7 @@ function App() {
     try {
       await api.logout();
     } finally {
+      setSessionToken(null);
       setSession(null);
       setPermissions(null);
       setAdmins([]);
@@ -210,7 +233,7 @@ function App() {
       setSelectedGuildId("");
       setOperation(null);
       setOrbat(null);
-      setShowAdminPanel(false);
+      setShowAdminModal(false);
       setStatus("Disconnected");
     }
   }
@@ -235,7 +258,7 @@ function App() {
         activate: true
       });
       setOperation(op);
-      setOrbat(await api.orbat(op.id));
+      await reloadOperation(op.id);
       setNewOperationName("");
     } catch (err) {
       setError(String(err));
@@ -243,35 +266,69 @@ function App() {
   }
 
   async function addSquad() {
-    if (!operation || !newSquadName.trim()) return;
+    if (!operation || !newSquadName.trim() || !permissions?.is_admin) return;
     try {
       await api.addSquad(operation.id, { name: newSquadName.trim() });
-      setOrbat(await api.orbat(operation.id));
+      await reloadOperation(operation.id);
       setNewSquadName("");
     } catch (err) {
       setError(String(err));
     }
   }
 
+  async function deleteSquad(squadId: number) {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      await api.deleteSquad(squadId);
+      await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function copySquad(squad: Squad) {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      const created = await api.addSquad(operation.id, { name: `${squad.name} Copy` });
+      for (const slot of squad.slots) {
+        await api.addSlot(operation.id, {
+          squad_id: created.id,
+          role_name: slot.role_name,
+          display_order: slot.display_order
+        });
+      }
+      await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function addSlot() {
-    if (!operation || !newSlotRole.trim() || newSlotSquadId === "") return;
+    if (!operation || !newSlotRole.trim() || newSlotSquadId === "" || !permissions?.is_admin) return;
     try {
       await api.addSlot(operation.id, {
         squad_id: Number(newSlotSquadId),
         role_name: newSlotRole.trim()
       });
-      setOrbat(await api.orbat(operation.id));
+      await reloadOperation(operation.id);
       setNewSlotRole("");
     } catch (err) {
       setError(String(err));
     }
   }
 
-  async function addAdmin() {
-    if (!guildId.trim()) {
-      setError("Load a guild first.");
-      return;
+  async function deleteSlot(slotId: number) {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      await api.deleteSlot(slotId);
+      await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
     }
+  }
+
+  async function addAdmin() {
+    if (!guildId.trim() || !permissions?.is_admin) return;
     if (!newAdminUserId.trim()) {
       setError("Enter a Discord user id.");
       return;
@@ -290,7 +347,7 @@ function App() {
   }
 
   async function removeAdmin(userId: string) {
-    if (!guildId.trim()) return;
+    if (!guildId.trim() || !permissions?.is_admin) return;
     try {
       await api.removeGuildAdmin(guildId.trim(), userId);
       setAdmins(await api.listGuildAdmins(guildId.trim()));
@@ -347,11 +404,7 @@ function App() {
             {loading ? "Loading..." : "Load Server"}
           </button>
         </form>
-        {guilds.length === 0 && (
-          <p className="access-note">
-            Keine gemeinsamen Server gefunden. Der Bot muss im Server sein.
-          </p>
-        )}
+        {guilds.length === 0 && <p className="access-note">Keine gemeinsamen Server gefunden. Der Bot muss im Server sein.</p>}
         {permissions && (
           <p className="access-note">
             Access: {permissions.is_admin ? "Admin" : "Viewer"} ({permissions.is_discord_admin ? "Discord" : "Portal"} auth)
@@ -361,7 +414,7 @@ function App() {
 
       <section className="panel">
         <h2>Admin Builder</h2>
-        {!permissions?.is_admin && <p className="access-note">Admin access required. Manage admins below.</p>}
+        {!permissions?.is_admin && <p className="access-note">Admin access required.</p>}
         <div className="row">
           <input
             value={newOperationName}
@@ -369,14 +422,11 @@ function App() {
             placeholder="New operation name"
           />
           <button onClick={createOperation} disabled={!permissions?.is_admin}>Create Operation</button>
-          <button
-            type="button"
-            className="ghost-btn"
-            onClick={() => setShowAdminPanel((v) => !v)}
-            disabled={!guildId.trim()}
-          >
-            {showAdminPanel ? "Hide Admins" : "Manage Admins"}
-          </button>
+          {permissions?.is_admin && (
+            <button type="button" className="ghost-btn" onClick={() => setShowAdminModal(true)}>
+              Manage Admins
+            </button>
+          )}
         </div>
 
         {operation && permissions?.is_admin && (
@@ -395,36 +445,11 @@ function App() {
                 ))}
               </select>
               <input value={newSlotRole} onChange={(e) => setNewSlotRole(e.target.value)} placeholder="Role name" />
-              <button onClick={addSlot}>Add Slot</button>
+              <button onClick={addSlot}>Add Role</button>
             </div>
           </>
         )}
       </section>
-
-      {showAdminPanel && (
-        <section className="panel">
-          <h2>Portal Admin Access</h2>
-          {!permissions?.is_admin && (
-            <p className="access-note">You need admin rights in this guild to modify portal admins.</p>
-          )}
-          <div className="row">
-            <input value={newAdminUserId} onChange={(e) => setNewAdminUserId(e.target.value)} placeholder="Discord User ID" />
-            <input value={newAdminUsername} onChange={(e) => setNewAdminUsername(e.target.value)} placeholder="Display name (optional)" />
-            <button onClick={addAdmin} disabled={!permissions?.is_admin}>Add Admin</button>
-          </div>
-          <div className="admin-list">
-            {admins.length === 0 && <p>No portal admins configured yet.</p>}
-            {admins.map((admin) => (
-              <div key={`${admin.guild_id}-${admin.user_id}`} className="admin-item">
-                <span>
-                  {admin.username || "Unknown"} ({admin.user_id})
-                </span>
-                <button onClick={() => removeAdmin(admin.user_id)} disabled={!permissions?.is_admin}>Remove</button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
 
       <section className="panel">
         <h2>Live ORBAT</h2>
@@ -433,18 +458,33 @@ function App() {
             <p className="op-title">Operation: <strong>{operation.name}</strong></p>
             {orbat?.squads.map((squad) => (
               <div key={squad.id} className="squad">
-                <h3>{squad.name}</h3>
+                <div className="squad-head">
+                  <h3>{squad.name}</h3>
+                  {permissions?.is_admin && (
+                    <div className="squad-actions">
+                      <button className="ghost-btn" onClick={() => copySquad(squad)}>Copy Squad</button>
+                      <button className="danger-btn" onClick={() => deleteSquad(squad.id)}>Delete Squad</button>
+                    </div>
+                  )}
+                </div>
                 <ul>
                   {squad.slots.map((slot) => (
                     <li key={slot.id}>
                       <span>
                         {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
                       </span>
-                      {!slot.assigned_to_member_name && (
-                        <button onClick={() => requestSlot(slot.id)} disabled={!session}>
-                          {session ? "Request" : "Login required"}
-                        </button>
-                      )}
+                      <div className="slot-actions">
+                        {!slot.assigned_to_member_name && (
+                          <button onClick={() => requestSlot(slot.id)} disabled={!session}>
+                            {session ? "Request" : "Login required"}
+                          </button>
+                        )}
+                        {permissions?.is_admin && (
+                          <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
+                            Delete Role
+                          </button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -455,6 +495,31 @@ function App() {
           <p className="access-note">No active operation in this server yet.</p>
         )}
       </section>
+
+      {showAdminModal && permissions?.is_admin && (
+        <div className="modal-overlay" onClick={() => setShowAdminModal(false)}>
+          <section className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Portal Admin Access</h2>
+              <button className="ghost-btn" onClick={() => setShowAdminModal(false)}>Close</button>
+            </div>
+            <div className="row">
+              <input value={newAdminUserId} onChange={(e) => setNewAdminUserId(e.target.value)} placeholder="Discord User ID" />
+              <input value={newAdminUsername} onChange={(e) => setNewAdminUsername(e.target.value)} placeholder="Display name (optional)" />
+              <button onClick={addAdmin}>Add Admin</button>
+            </div>
+            <div className="admin-list">
+              {admins.length === 0 && <p>No portal admins configured yet.</p>}
+              {admins.map((admin) => (
+                <div key={`${admin.guild_id}-${admin.user_id}`} className="admin-item">
+                  <span>{admin.username || "Unknown"} ({admin.user_id})</span>
+                  <button className="danger-btn" onClick={() => removeAdmin(admin.user_id)}>Remove</button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
 
       {error && <p className="error">{error}</p>}
     </div>
