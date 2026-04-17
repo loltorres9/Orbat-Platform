@@ -36,12 +36,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...((init?.headers as Record<string, string> | undefined) || {}),
   };
   let effectiveToken = sessionToken;
-  if (!effectiveToken) {
-    const fromUrl = tokenFromCurrentLocation();
-    if (fromUrl) {
-      setSessionToken(fromUrl);
-      effectiveToken = fromUrl;
-    }
+  const fromUrl = tokenFromCurrentLocation();
+  // URL token must always win during OAuth return/bootstrap.
+  // This prevents stale localStorage tokens from causing immediate 401 loops.
+  if (fromUrl && fromUrl !== effectiveToken) {
+    setSessionToken(fromUrl);
+    effectiveToken = fromUrl;
   }
   if (effectiveToken) {
     headers["X-Orbat-Session"] = effectiveToken;
