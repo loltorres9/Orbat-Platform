@@ -57,6 +57,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sessionChecked, setSessionChecked] = useState(false);
+  const [sessionTokenScrubbed, setSessionTokenScrubbed] = useState(false);
   const [sessionReloadKey, setSessionReloadKey] = useState(0);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminOverlayEnabled, setAdminOverlayEnabled] = useState(false);
@@ -95,32 +96,39 @@ function App() {
     const tokenMatch = href.match(/[?#&]orbat_session=([^&#]+)/i);
     if (!tokenMatch?.[1]) return null;
 
-    const token = decodeURIComponent(tokenMatch[1]);
-    const url = new URL(window.location.href);
+    return decodeURIComponent(tokenMatch[1]);
+  }
 
-    // Strip token from normal query.
+  function scrubSessionTokenFromLocation() {
+    const url = new URL(window.location.href);
+    let changed = false;
     if (url.searchParams.has("orbat_session")) {
       url.searchParams.delete("orbat_session");
+      changed = true;
     }
-
-    // Strip token from hash fragment query-like payload.
     if (url.hash) {
       const hash = url.hash;
       const qIndex = hash.indexOf("?");
       if (qIndex >= 0) {
         const routePart = hash.slice(0, qIndex);
         const params = new URLSearchParams(hash.slice(qIndex + 1));
-        params.delete("orbat_session");
-        const rest = params.toString();
-        url.hash = rest ? `${routePart}?${rest}` : routePart;
+        if (params.has("orbat_session")) {
+          params.delete("orbat_session");
+          const rest = params.toString();
+          url.hash = rest ? `${routePart}?${rest}` : routePart;
+          changed = true;
+        }
       } else {
-        // Handle malformed fragment patterns like #/app&orbat_session=...
-        url.hash = hash.replace(/([&?])orbat_session=[^&?#]*/i, "").replace(/[?&]$/, "");
+        const next = hash.replace(/([&?])orbat_session=[^&?#]*/i, "").replace(/[?&]$/, "");
+        if (next !== hash) {
+          url.hash = next;
+          changed = true;
+        }
       }
     }
-
-    window.history.replaceState({}, "", url.toString());
-    return token;
+    if (changed) {
+      window.history.replaceState({}, "", url.toString());
+    }
   }
 
   async function refreshGuildAccess(targetGuildId: string) {
@@ -291,6 +299,12 @@ function App() {
     window.addEventListener("hashchange", onHashToken);
     return () => window.removeEventListener("hashchange", onHashToken);
   }, []);
+
+  useEffect(() => {
+    if (!sessionChecked || sessionTokenScrubbed) return;
+    scrubSessionTokenFromLocation();
+    setSessionTokenScrubbed(true);
+  }, [sessionChecked, sessionTokenScrubbed]);
 
   useEffect(() => {
     setSessionChecked(false);
