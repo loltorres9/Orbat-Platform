@@ -382,14 +382,16 @@ async def _post_approval_request(
 def _with_session_in_return_to(target_url: str, session_token: str) -> str:
     try:
         parsed = urlparse(target_url)
-        if parsed.fragment:
-            fragment = parsed.fragment
-            separator = "&" if "?" in fragment else "?"
-            fragment = f"{fragment}{separator}orbat_session={session_token}"
-            return urlunparse(parsed._replace(fragment=fragment))
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query["orbat_session"] = session_token
-        return urlunparse(parsed._replace(query=urlencode(query)))
+        new_query = urlencode(query)
+
+        new_fragment = parsed.fragment
+        if parsed.fragment:
+            separator = "&" if "?" in parsed.fragment else "?"
+            new_fragment = f"{parsed.fragment}{separator}orbat_session={session_token}"
+
+        return urlunparse(parsed._replace(query=new_query, fragment=new_fragment))
     except Exception:
         return target_url
 
