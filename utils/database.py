@@ -772,6 +772,23 @@ async def clear_slot_assignment(slot_id: int) -> bool:
         return True
 
 
+async def cancel_approved_request_for_slot_member(operation_id: int, slot_id: int, member_id: str) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE requests
+               SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+               WHERE operation_id = $1
+                 AND slot_id = $2
+                 AND member_id = $3
+                 AND status = 'approved'""",
+            operation_id,
+            slot_id,
+            member_id,
+        )
+        return int(result.split()[-1])
+
+
 async def delete_slot(slot_id: int) -> bool:
     pool = await get_pool()
     async with pool.acquire() as db:

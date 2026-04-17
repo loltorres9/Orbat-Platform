@@ -294,6 +294,19 @@ function App() {
     }
   }
 
+  async function releaseSlot(slotId: number) {
+    if (!session) {
+      setError("Please log in first.");
+      return;
+    }
+    try {
+      await api.releaseSlot(slotId);
+      if (operation) await reloadOperation(operation.id);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function logout() {
     try {
       await api.logout();
@@ -782,6 +795,18 @@ function App() {
                                     )}
                                   </span>
                                   <div className="slot-actions">
+                                    {slot.assigned_to_member_id && session && slot.assigned_to_member_id === session.user_id ? (
+                                      <button className="ghost-btn" onClick={() => releaseSlot(slot.id)}>
+                                        Leave Slot
+                                      </button>
+                                    ) : null}
+                                    {slot.assigned_to_member_id &&
+                                    permissions?.is_admin &&
+                                    (!session || slot.assigned_to_member_id !== session.user_id) ? (
+                                      <button className="ghost-btn" onClick={() => releaseSlot(slot.id)}>
+                                        Free Slot
+                                      </button>
+                                    ) : null}
                                     {!slot.assigned_to_member_name && (
                                       <button onClick={() => requestSlot(slot.id)} disabled={!session}>
                                         {session ? "Request" : "Login required"}

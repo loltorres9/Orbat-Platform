@@ -57,6 +57,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ guild_id: guildId })
     }),
+  releaseSlot: (slotId: number) =>
+    req<{ ok: boolean; released_member_id?: string }>(`/api/slots/${slotId}/release`, {
+      method: "POST"
+    }),
   createOperation: (payload: {
     guild_id: string;
     name: string;

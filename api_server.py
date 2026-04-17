@@ -840,6 +840,46 @@ def create_api_app(bot) -> FastAPI:
             raise HTTPException(status_code=404, detail="Slot not found.")
         return {"ok": True}
 
+    @app.post("/api/slots/{slot_id}/release")
+    async def release_slot(
+        slot_id: int,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        slot = await database.get_slot_by_id(slot_id)
+        if not slot:
+            raise HTTPException(status_code=404, detail="Slot not found.")
+        op = await database.get_operation_by_id(slot["operation_id"])
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+
+        is_admin = False
+        if await database.is_web_admin(str(op["guild_id"]), session["user_id"]):
+            is_admin = True
+        elif await _discord_member_has_admin_permissions(app, str(op["guild_id"]), session["user_id"]):
+            is_admin = True
+
+        assigned_member_id = slot.get("assigned_to_member_id")
+        if not assigned_member_id:
+            raise HTTPException(status_code=409, detail="Slot is already open.")
+
+        is_self_release = str(assigned_member_id) == str(session["user_id"])
+        if not (is_self_release or is_admin):
+            raise HTTPException(status_code=403, detail="Only assigned member or admins can release this slot.")
+
+        success = await database.clear_slot_assignment(slot_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Slot not found.")
+
+        await database.cancel_approved_request_for_slot_member(
+            operation_id=slot["operation_id"],
+            slot_id=slot_id,
+            member_id=str(assigned_member_id),
+        )
+        await database.emit_slot_update(str(op["guild_id"]), slot["operation_id"], "slot_released", slot_id)
+        return {"ok": True, "released_member_id": str(assigned_member_id)}
+
     @app.post("/api/slots/{slot_id}/request")
     async def request_slot(
         slot_id: int,
