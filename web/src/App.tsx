@@ -304,11 +304,13 @@ function App() {
       <div className="page">
         <section className="panel login-panel">
           <h1>ORBAT Platform</h1>
-          <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
-          <a className="button-link" href={discordLoginUrl(undefined, buildAppHashUrl())}>
-            Login with Discord
-          </a>
-          {error && <p className="error">{error}</p>}
+          <div className="login-stack">
+            <p className="access-note">Bitte zuerst mit Discord anmelden.</p>
+            <a className="button-link" href={discordLoginUrl(undefined, buildAppHashUrl())}>
+              Login with Discord
+            </a>
+            {error && <p className="error">{error}</p>}
+          </div>
         </section>
       </div>
     );

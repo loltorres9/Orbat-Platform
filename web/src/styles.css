@@ -87,6 +87,12 @@ body {
   letter-spacing: 0.8px;
 }
 
+.login-stack {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
 .op-title {
   color: var(--muted);
 }
@@ -128,6 +134,12 @@ button,
   cursor: pointer;
   text-decoration: none;
   transition: transform 120ms ease, filter 120ms ease;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 button:hover,
