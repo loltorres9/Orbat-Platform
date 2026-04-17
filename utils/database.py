@@ -119,9 +119,13 @@ async def init_db():
             ALTER TABLE operations ADD COLUMN IF NOT EXISTS
                 reminder_fired INTEGER DEFAULT 0
         ''')
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_left TEXT DEFAULT 'Left Wing'")
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_center TEXT DEFAULT 'Center'")
+        await db.execute("ALTER TABLE operations ADD COLUMN IF NOT EXISTS lane_name_right TEXT DEFAULT 'Right Wing'")
         await db.execute('''
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS slot_id INTEGER
         ''')
+        await db.execute("ALTER TABLE slots ADD COLUMN IF NOT EXISTS team TEXT")
         await db.execute('''
             ALTER TABLE squads ADD COLUMN IF NOT EXISTS column_index INTEGER NOT NULL DEFAULT 0
         ''')
@@ -503,8 +507,11 @@ async def create_operation_v2(
             if activate:
                 await db.execute("UPDATE operations SET is_active = 0 WHERE guild_id = $1", guild_id)
             row = await db.fetchrow(
-                """INSERT INTO operations (guild_id, name, event_time, reminder_minutes, is_active)
-                   VALUES ($1, $2, $3, $4, $5)
+                """INSERT INTO operations (
+                     guild_id, name, event_time, reminder_minutes, is_active,
+                     lane_name_left, lane_name_center, lane_name_right
+                   )
+                   VALUES ($1, $2, $3, $4, $5, 'Left Wing', 'Center', 'Right Wing')
                    RETURNING id""",
                 guild_id,
                 name,
@@ -513,6 +520,30 @@ async def create_operation_v2(
                 1 if activate else 0,
             )
             return row["id"]
+
+
+async def update_operation_lane_names(
+    operation_id: int,
+    lane_name_left: Optional[str] = None,
+    lane_name_center: Optional[str] = None,
+    lane_name_right: Optional[str] = None,
+) -> bool:
+    if lane_name_left is None and lane_name_center is None and lane_name_right is None:
+        return False
+    pool = await get_pool()
+    async with pool.acquire() as db:
+        result = await db.execute(
+            """UPDATE operations
+               SET lane_name_left = COALESCE($1, lane_name_left),
+                   lane_name_center = COALESCE($2, lane_name_center),
+                   lane_name_right = COALESCE($3, lane_name_right)
+               WHERE id = $4""",
+            lane_name_left,
+            lane_name_center,
+            lane_name_right,
+            operation_id,
+        )
+        return int(result.split()[-1]) > 0
 
 
 async def list_operations(guild_id: str) -> list:
@@ -623,6 +654,7 @@ async def create_slot(
     squad_id: int,
     role_name: str,
     display_order: Optional[int] = None,
+    team: Optional[str] = None,
     assigned_to_member_id: Optional[str] = None,
     assigned_to_member_name: Optional[str] = None,
 ) -> int:
@@ -635,13 +667,14 @@ async def create_slot(
             )
         row = await db.fetchrow(
             """INSERT INTO slots
-               (operation_id, squad_id, role_name, display_order, assigned_to_member_id, assigned_to_member_name)
-               VALUES ($1, $2, $3, $4, $5, $6)
+               (operation_id, squad_id, role_name, display_order, team, assigned_to_member_id, assigned_to_member_name)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                RETURNING id""",
             operation_id,
             squad_id,
             role_name,
             display_order,
+            team,
             assigned_to_member_id,
             assigned_to_member_name,
         )
@@ -667,8 +700,9 @@ async def update_slot(
     role_name: Optional[str] = None,
     display_order: Optional[int] = None,
     squad_id: Optional[int] = None,
+    team: Optional[str] = None,
 ) -> bool:
-    if role_name is None and display_order is None and squad_id is None:
+    if role_name is None and display_order is None and squad_id is None and team is None:
         return False
     pool = await get_pool()
     async with pool.acquire() as db:
@@ -679,11 +713,13 @@ async def update_slot(
             """UPDATE slots
                SET role_name = COALESCE($1, role_name),
                    display_order = COALESCE($2, display_order),
-                   squad_id = COALESCE($3, squad_id)
-               WHERE id = $4""",
+                   squad_id = COALESCE($3, squad_id),
+                   team = COALESCE($4, team)
+               WHERE id = $5""",
             role_name,
             display_order,
             squad_id,
+            team,
             slot_id,
         )
         await _notify_slot_update(db, "", row["operation_id"], "slot_updated", slot_id)
@@ -770,6 +806,7 @@ async def get_orbat_structure(operation_id: int) -> dict:
                     "id": slot["id"],
                     "role_name": slot["role_name"],
                     "display_order": slot["display_order"],
+                    "team": slot["team"],
                     "assigned_to_member_id": slot["assigned_to_member_id"],
                     "assigned_to_member_name": slot["assigned_to_member_name"],
                 }

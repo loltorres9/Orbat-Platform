@@ -259,6 +259,19 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.team-chip {
+  display: inline-block;
+  min-width: 58px;
+  text-align: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid #607187;
+  background: rgba(132, 149, 169, 0.2);
+  color: #dce4ee;
+  font-size: 0.75rem;
+  margin-right: 6px;
+}
+
 .squad ul {
   list-style: none;
   padding: 0;

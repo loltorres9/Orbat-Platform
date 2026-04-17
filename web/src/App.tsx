@@ -4,7 +4,8 @@ import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session
 
 function App() {
   const SQUAD_LANES = [0, 1, 2] as const;
-  const laneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
+  const TEAM_OPTIONS = ["Alpha", "Bravo", "Charlie", "Delta"] as const;
+  const defaultLaneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
   const buildAppHashUrl = () =>
     `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
@@ -28,13 +29,18 @@ function App() {
   const [newSquadName, setNewSquadName] = useState("");
   const [newSlotSquadId, setNewSlotSquadId] = useState<number | "">("");
   const [newSlotRole, setNewSlotRole] = useState("");
+  const [newSlotTeam, setNewSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("Alpha");
   const [newAdminUserId, setNewAdminUserId] = useState("");
   const [newAdminUsername, setNewAdminUsername] = useState("");
   const [editingSquadId, setEditingSquadId] = useState<number | null>(null);
   const [editingSquadName, setEditingSquadName] = useState("");
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
   const [editingSlotName, setEditingSlotName] = useState("");
+  const [editingSlotTeam, setEditingSlotTeam] = useState<(typeof TEAM_OPTIONS)[number]>("Alpha");
   const [draggedSquadId, setDraggedSquadId] = useState<number | null>(null);
+  const [laneNameLeft, setLaneNameLeft] = useState("Left Wing");
+  const [laneNameCenter, setLaneNameCenter] = useState("Center");
+  const [laneNameRight, setLaneNameRight] = useState("Right Wing");
 
   function extractSessionTokenFromHash(): string | null {
     const hash = window.location.hash || "";
@@ -72,12 +78,15 @@ function App() {
       await refreshGuildAccess(targetGuildId);
       try {
         const op = await api.activeOperation(targetGuildId);
-        setOperation(op);
-        setOrbat(await api.orbat(op.id));
+        const structure = await api.orbat(op.id);
+        setOperation(structure.operation);
+        setOrbat(structure);
+        syncLaneNameState(structure.operation);
       } catch (err) {
         if (isNoActiveOperationError(err)) {
           setOperation(null);
           setOrbat(null);
+          syncLaneNameState(null);
         } else {
           throw err;
         }
@@ -111,8 +120,23 @@ function App() {
     setSelectedGuildId(preferred.id);
   }
 
+  function syncLaneNameState(op: Operation | null) {
+    setLaneNameLeft((op?.lane_name_left || defaultLaneLabel(0)).trim() || defaultLaneLabel(0));
+    setLaneNameCenter((op?.lane_name_center || defaultLaneLabel(1)).trim() || defaultLaneLabel(1));
+    setLaneNameRight((op?.lane_name_right || defaultLaneLabel(2)).trim() || defaultLaneLabel(2));
+  }
+
+  function laneLabel(lane: number) {
+    if (lane === 0) return laneNameLeft || defaultLaneLabel(0);
+    if (lane === 1) return laneNameCenter || defaultLaneLabel(1);
+    return laneNameRight || defaultLaneLabel(2);
+  }
+
   async function reloadOperation(operationId: number) {
-    setOrbat(await api.orbat(operationId));
+    const structure = await api.orbat(operationId);
+    setOrbat(structure);
+    setOperation(structure.operation);
+    syncLaneNameState(structure.operation);
   }
 
   function laneBuckets(source: Squad[]) {
@@ -267,6 +291,7 @@ function App() {
       setSelectedGuildId("");
       setOperation(null);
       setOrbat(null);
+      syncLaneNameState(null);
       setShowAdminModal(false);
       setStatus("Disconnected");
     }
@@ -291,7 +316,6 @@ function App() {
         name: newOperationName.trim(),
         activate: true
       });
-      setOperation(op);
       await reloadOperation(op.id);
       setNewOperationName("");
     } catch (err) {
@@ -305,6 +329,20 @@ function App() {
       await api.addSquad(operation.id, { name: newSquadName.trim(), column_index: 1 });
       await reloadOperation(operation.id);
       setNewSquadName("");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function saveLaneNames() {
+    if (!operation || !permissions?.is_admin) return;
+    try {
+      await api.updateOperationLanes(operation.id, {
+        lane_name_left: laneNameLeft.trim() || defaultLaneLabel(0),
+        lane_name_center: laneNameCenter.trim() || defaultLaneLabel(1),
+        lane_name_right: laneNameRight.trim() || defaultLaneLabel(2),
+      });
+      await reloadOperation(operation.id);
     } catch (err) {
       setError(String(err));
     }
@@ -409,7 +447,8 @@ function App() {
         await api.addSlot(operation.id, {
           squad_id: created.id,
           role_name: slot.role_name,
-          display_order: slot.display_order
+          display_order: slot.display_order,
+          team: slot.team || "Alpha",
         });
       }
       await reloadOperation(operation.id);
@@ -423,10 +462,12 @@ function App() {
     try {
       await api.addSlot(operation.id, {
         squad_id: Number(newSlotSquadId),
-        role_name: newSlotRole.trim()
+        role_name: newSlotRole.trim(),
+        team: newSlotTeam,
       });
       await reloadOperation(operation.id);
       setNewSlotRole("");
+      setNewSlotTeam("Alpha");
     } catch (err) {
       setError(String(err));
     }
@@ -445,11 +486,13 @@ function App() {
   function beginEditSlot(slot: Slot) {
     setEditingSlotId(slot.id);
     setEditingSlotName(slot.role_name);
+    setEditingSlotTeam(slot.team || "Alpha");
   }
 
   function cancelEditSlot() {
     setEditingSlotId(null);
     setEditingSlotName("");
+    setEditingSlotTeam("Alpha");
   }
 
   async function saveEditSlot() {
@@ -459,7 +502,10 @@ function App() {
       return;
     }
     try {
-      await api.updateSlot(editingSlotId, { role_name: editingSlotName.trim() });
+      await api.updateSlot(editingSlotId, {
+        role_name: editingSlotName.trim(),
+        team: editingSlotTeam,
+      });
       await reloadOperation(operation.id);
       cancelEditSlot();
     } catch (err) {
@@ -591,6 +637,12 @@ function App() {
         {operation && permissions?.is_admin && (
           <>
             <div className="row">
+              <input value={laneNameLeft} onChange={(e) => setLaneNameLeft(e.target.value)} placeholder="Left lane name" />
+              <input value={laneNameCenter} onChange={(e) => setLaneNameCenter(e.target.value)} placeholder="Center lane name" />
+              <input value={laneNameRight} onChange={(e) => setLaneNameRight(e.target.value)} placeholder="Right lane name" />
+              <button onClick={saveLaneNames}>Save Lane Names</button>
+            </div>
+            <div className="row">
               <input value={newSquadName} onChange={(e) => setNewSquadName(e.target.value)} placeholder="Squad name" />
               <button onClick={addSquad}>Add Squad</button>
             </div>
@@ -604,6 +656,11 @@ function App() {
                 ))}
               </select>
               <input value={newSlotRole} onChange={(e) => setNewSlotRole(e.target.value)} placeholder="Role name" />
+              <select value={newSlotTeam} onChange={(e) => setNewSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}>
+                {TEAM_OPTIONS.map((team) => (
+                  <option key={team} value={team}>{team}</option>
+                ))}
+              </select>
               <button onClick={addSlot}>Add Role</button>
             </div>
           </>
@@ -686,12 +743,20 @@ function App() {
                                       onChange={(e) => setEditingSlotName(e.target.value)}
                                       placeholder="Role name"
                                     />
+                                    <select
+                                      value={editingSlotTeam}
+                                      onChange={(e) => setEditingSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}
+                                    >
+                                      {TEAM_OPTIONS.map((team) => (
+                                        <option key={team} value={team}>{team}</option>
+                                      ))}
+                                    </select>
                                     <button onClick={saveEditSlot}>Save</button>
                                     <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
                                   </span>
                                 ) : (
                                   <>
-                                    {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                                    <span className="team-chip">{slot.team || "Alpha"}</span> {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
                                   </>
                                 )}
                               </span>

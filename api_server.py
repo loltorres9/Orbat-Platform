@@ -50,12 +50,20 @@ class SlotCreateInput(BaseModel):
     squad_id: int
     role_name: str
     display_order: Optional[int] = None
+    team: Optional[str] = None
 
 
 class SlotUpdateInput(BaseModel):
     role_name: Optional[str] = None
     display_order: Optional[int] = None
     squad_id: Optional[int] = None
+    team: Optional[str] = None
+
+
+class OperationLaneNamesInput(BaseModel):
+    lane_name_left: Optional[str] = None
+    lane_name_center: Optional[str] = None
+    lane_name_right: Optional[str] = None
 
 
 class SlotRequestInput(BaseModel):
@@ -636,6 +644,29 @@ def create_api_app(bot) -> FastAPI:
         await database.emit_slot_update(op["guild_id"], operation_id, "operation_activated")
         return {"ok": True}
 
+    @app.patch("/api/operations/{operation_id}/lanes")
+    async def update_operation_lanes(
+        operation_id: int,
+        payload: OperationLaneNamesInput,
+        orbat_session: Optional[str] = Cookie(default=None),
+        x_orbat_session: Optional[str] = Header(default=None, alias="X-Orbat-Session"),
+    ):
+        session = await _session_from_token(orbat_session, x_orbat_session)
+        op = await database.get_operation_by_id(operation_id)
+        if not op:
+            raise HTTPException(status_code=404, detail="Operation not found.")
+        await _require_guild_admin(app, session, str(op["guild_id"]))
+        success = await database.update_operation_lane_names(
+            operation_id=operation_id,
+            lane_name_left=payload.lane_name_left,
+            lane_name_center=payload.lane_name_center,
+            lane_name_right=payload.lane_name_right,
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail="No lane name fields provided.")
+        await database.emit_slot_update(str(op["guild_id"]), operation_id, "operation_lanes_updated")
+        return {"ok": True}
+
     @app.get("/api/operations/{operation_id}/orbat")
     async def get_orbat(operation_id: int):
         data = await database.get_orbat_structure(operation_id)
@@ -732,6 +763,7 @@ def create_api_app(bot) -> FastAPI:
             squad_id=payload.squad_id,
             role_name=payload.role_name,
             display_order=payload.display_order,
+            team=payload.team,
         )
         return {"id": slot_id}
 
@@ -755,6 +787,7 @@ def create_api_app(bot) -> FastAPI:
             role_name=payload.role_name,
             display_order=payload.display_order,
             squad_id=payload.squad_id,
+            team=payload.team,
         )
         if not success:
             raise HTTPException(status_code=404, detail="Slot not found or no fields updated.")

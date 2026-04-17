@@ -36,12 +36,16 @@ export type Operation = {
   is_active: number;
   event_time?: string | null;
   reminder_minutes: number;
+  lane_name_left?: string | null;
+  lane_name_center?: string | null;
+  lane_name_right?: string | null;
 };
 
 export type Slot = {
   id: number;
   role_name: string;
   display_order: number;
+  team?: "Alpha" | "Bravo" | "Charlie" | "Delta" | null;
   assigned_to_member_id?: string | null;
   assigned_to_member_name?: string | null;
 };

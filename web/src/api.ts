@@ -73,12 +73,28 @@ export const api = {
     }),
   deleteSquad: (squadId: number) =>
     req<{ ok: boolean }>(`/api/squads/${squadId}`, { method: "DELETE" }),
-  addSlot: (operationId: number, payload: { squad_id: number; role_name: string; display_order?: number }) =>
+  addSlot: (
+    operationId: number,
+    payload: {
+      squad_id: number;
+      role_name: string;
+      display_order?: number;
+      team?: "Alpha" | "Bravo" | "Charlie" | "Delta";
+    }
+  ) =>
     req<{ id: number }>(`/api/operations/${operationId}/slots`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  updateSlot: (slotId: number, payload: { role_name?: string; display_order?: number; squad_id?: number }) =>
+  updateSlot: (
+    slotId: number,
+    payload: {
+      role_name?: string;
+      display_order?: number;
+      squad_id?: number;
+      team?: "Alpha" | "Bravo" | "Charlie" | "Delta";
+    }
+  ) =>
     req<{ ok: boolean }>(`/api/slots/${slotId}`, {
       method: "PATCH",
       body: JSON.stringify(payload)
@@ -87,6 +103,14 @@ export const api = {
     req<{ ok: boolean }>(`/api/slots/${slotId}`, { method: "DELETE" }),
   activateOperation: (operationId: number) =>
     req<{ ok: boolean }>(`/api/operations/${operationId}/activate`, { method: "POST" }),
+  updateOperationLanes: (
+    operationId: number,
+    payload: { lane_name_left?: string; lane_name_center?: string; lane_name_right?: string }
+  ) =>
+    req<{ ok: boolean }>(`/api/operations/${operationId}/lanes`, {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }),
   guildPermissions: (guildId: string) =>
     req<GuildPermissions>(`/api/guilds/${encodeURIComponent(guildId)}/me/permissions`),
   listGuildAdmins: (guildId: string) =>
