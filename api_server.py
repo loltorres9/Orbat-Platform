@@ -37,11 +37,13 @@ class OperationCreateInput(BaseModel):
 class SquadCreateInput(BaseModel):
     name: str
     display_order: Optional[int] = None
+    column_index: Optional[int] = None
 
 
 class SquadUpdateInput(BaseModel):
     name: Optional[str] = None
     display_order: Optional[int] = None
+    column_index: Optional[int] = None
 
 
 class SlotCreateInput(BaseModel):
@@ -653,7 +655,12 @@ def create_api_app(bot) -> FastAPI:
         if not op:
             raise HTTPException(status_code=404, detail="Operation not found.")
         await _require_guild_admin(app, session, str(op["guild_id"]))
-        squad_id = await database.create_squad(operation_id, payload.name, payload.display_order)
+        squad_id = await database.create_squad(
+            operation_id=operation_id,
+            name=payload.name,
+            display_order=payload.display_order,
+            column_index=payload.column_index,
+        )
         return {"id": squad_id}
 
     @app.patch("/api/squads/{squad_id}")
@@ -679,6 +686,7 @@ def create_api_app(bot) -> FastAPI:
             squad_id=squad_id,
             name=payload.name,
             display_order=payload.display_order,
+            column_index=payload.column_index,
         )
         if not success:
             raise HTTPException(status_code=404, detail="Squad not found or no fields updated.")

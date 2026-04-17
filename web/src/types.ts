@@ -50,6 +50,7 @@ export type Squad = {
   id: number;
   name: string;
   display_order: number;
+  column_index: number;
   slots: Slot[];
 };
 

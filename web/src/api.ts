@@ -61,12 +61,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  addSquad: (operationId: number, payload: { name: string; display_order?: number }) =>
+  addSquad: (operationId: number, payload: { name: string; display_order?: number; column_index?: number }) =>
     req<{ id: number }>(`/api/operations/${operationId}/squads`, {
       method: "POST",
       body: JSON.stringify(payload)
     }),
-  updateSquad: (squadId: number, payload: { name?: string; display_order?: number }) =>
+  updateSquad: (squadId: number, payload: { name?: string; display_order?: number; column_index?: number }) =>
     req<{ ok: boolean }>(`/api/squads/${squadId}`, {
       method: "PATCH",
       body: JSON.stringify(payload)

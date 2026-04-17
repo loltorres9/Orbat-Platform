@@ -122,6 +122,9 @@ async def init_db():
         await db.execute('''
             ALTER TABLE requests ADD COLUMN IF NOT EXISTS slot_id INTEGER
         ''')
+        await db.execute('''
+            ALTER TABLE squads ADD COLUMN IF NOT EXISTS column_index INTEGER NOT NULL DEFAULT 0
+        ''')
         # Hard cleanup: drop old sheet-based columns once migrated.
         await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_url")
         await db.execute("ALTER TABLE operations DROP COLUMN IF EXISTS sheet_id")
@@ -153,6 +156,10 @@ async def init_db():
         await db.execute('''
             CREATE INDEX IF NOT EXISTS idx_squads_operation_order
             ON squads(operation_id, display_order, id)
+        ''')
+        await db.execute('''
+            CREATE INDEX IF NOT EXISTS idx_squads_operation_column_order
+            ON squads(operation_id, column_index, display_order, id)
         ''')
         await db.execute('''
             CREATE INDEX IF NOT EXISTS idx_slots_operation_order
@@ -530,21 +537,29 @@ async def activate_operation(guild_id: str, operation_id: int) -> bool:
             return int(result.split()[-1]) > 0
 
 
-async def create_squad(operation_id: int, name: str, display_order: Optional[int] = None) -> int:
+async def create_squad(
+    operation_id: int,
+    name: str,
+    display_order: Optional[int] = None,
+    column_index: Optional[int] = None,
+) -> int:
     pool = await get_pool()
     async with pool.acquire() as db:
+        lane = 0 if column_index is None else max(0, min(2, int(column_index)))
         if display_order is None:
             display_order = await db.fetchval(
-                "SELECT COALESCE(MAX(display_order), -1) + 1 FROM squads WHERE operation_id = $1",
+                "SELECT COALESCE(MAX(display_order), -1) + 1 FROM squads WHERE operation_id = $1 AND column_index = $2",
                 operation_id,
+                lane,
             )
         row = await db.fetchrow(
-            """INSERT INTO squads (operation_id, name, display_order)
-               VALUES ($1, $2, $3)
+            """INSERT INTO squads (operation_id, name, display_order, column_index)
+               VALUES ($1, $2, $3, $4)
                RETURNING id""",
             operation_id,
             name,
             display_order,
+            lane,
         )
         await _notify_slot_update(db, "", operation_id, "squad_created")
         return row["id"]
@@ -554,14 +569,20 @@ async def list_squads(operation_id: int) -> list:
     pool = await get_pool()
     async with pool.acquire() as db:
         return await db.fetch(
-            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY display_order, id",
+            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
             operation_id,
         )
 
 
-async def update_squad(squad_id: int, name: Optional[str] = None, display_order: Optional[int] = None) -> bool:
-    if name is None and display_order is None:
+async def update_squad(
+    squad_id: int,
+    name: Optional[str] = None,
+    display_order: Optional[int] = None,
+    column_index: Optional[int] = None,
+) -> bool:
+    if name is None and display_order is None and column_index is None:
         return False
+    lane = None if column_index is None else max(0, min(2, int(column_index)))
     pool = await get_pool()
     async with pool.acquire() as db:
         row = await db.fetchrow("SELECT operation_id FROM squads WHERE id = $1", squad_id)
@@ -570,10 +591,12 @@ async def update_squad(squad_id: int, name: Optional[str] = None, display_order:
         await db.execute(
             """UPDATE squads
                SET name = COALESCE($1, name),
-                   display_order = COALESCE($2, display_order)
-               WHERE id = $3""",
+                   display_order = COALESCE($2, display_order),
+                   column_index = COALESCE($3, column_index)
+               WHERE id = $4""",
             name,
             display_order,
+            lane,
             squad_id,
         )
         await _notify_slot_update(db, "", row["operation_id"], "squad_updated")
@@ -721,7 +744,7 @@ async def get_orbat_structure(operation_id: int) -> dict:
     async with pool.acquire() as db:
         operation = await db.fetchrow("SELECT * FROM operations WHERE id = $1", operation_id)
         squads = await db.fetch(
-            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY display_order, id",
+            "SELECT * FROM squads WHERE operation_id = $1 ORDER BY column_index, display_order, id",
             operation_id,
         )
         slots = await db.fetch(
@@ -729,7 +752,16 @@ async def get_orbat_structure(operation_id: int) -> dict:
             operation_id,
         )
 
-    squad_map = {s["id"]: {"id": s["id"], "name": s["name"], "display_order": s["display_order"], "slots": []} for s in squads}
+    squad_map = {
+        s["id"]: {
+            "id": s["id"],
+            "name": s["name"],
+            "display_order": s["display_order"],
+            "column_index": s["column_index"] if s["column_index"] is not None else 0,
+            "slots": [],
+        }
+        for s in squads
+    }
     for slot in slots:
         bucket = squad_map.get(slot["squad_id"])
         if bucket is not None:
@@ -745,7 +777,7 @@ async def get_orbat_structure(operation_id: int) -> dict:
 
     return {
         "operation": dict(operation) if operation else None,
-        "squads": sorted(squad_map.values(), key=lambda x: x["display_order"]),
+        "squads": sorted(squad_map.values(), key=lambda x: (x["column_index"], x["display_order"])),
     }
 
 

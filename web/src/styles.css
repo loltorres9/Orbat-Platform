@@ -195,6 +195,50 @@ button:disabled {
   margin-bottom: 10px;
 }
 
+.lane-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.lane-column {
+  border: 1px solid #2f3b4b;
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(10, 14, 20, 0.45);
+  min-height: 120px;
+}
+
+.lane-header {
+  font-weight: 700;
+  color: #ced7e2;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-size: 0.85rem;
+}
+
+.drop-slot {
+  height: 18px;
+  border: 1px dashed transparent;
+  border-radius: 8px;
+  margin: 4px 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: #9fb0c3;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.drop-slot.active {
+  display: flex;
+  border-color: #75859a;
+  background: rgba(147, 160, 177, 0.15);
+}
+
 .squad-head {
   display: flex;
   align-items: center;
@@ -303,6 +347,10 @@ button:disabled {
   .button-link {
     width: 100%;
     min-width: 0;
+  }
+
+  .lane-grid {
+    grid-template-columns: 1fr;
   }
 
   .squad-head,

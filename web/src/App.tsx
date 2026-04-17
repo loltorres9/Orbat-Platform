@@ -3,6 +3,8 @@ import { api, discordLoginUrl, openOperationSocket, setSessionToken } from "./ap
 import type { DiscordGuild, GuildPermissions, Operation, OrbatStructure, Session, Slot, Squad, WebAdminEntry } from "./types";
 
 function App() {
+  const SQUAD_LANES = [0, 1, 2] as const;
+  const laneLabel = (lane: number) => (lane === 0 ? "Left Wing" : lane === 1 ? "Center" : "Right Wing");
   const basePath = import.meta.env.BASE_URL || "/";
   const buildAppHashUrl = () =>
     `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
@@ -32,6 +34,7 @@ function App() {
   const [editingSquadName, setEditingSquadName] = useState("");
   const [editingSlotId, setEditingSlotId] = useState<number | null>(null);
   const [editingSlotName, setEditingSlotName] = useState("");
+  const [draggedSquadId, setDraggedSquadId] = useState<number | null>(null);
 
   function extractSessionTokenFromHash(): string | null {
     const hash = window.location.hash || "";
@@ -110,6 +113,33 @@ function App() {
 
   async function reloadOperation(operationId: number) {
     setOrbat(await api.orbat(operationId));
+  }
+
+  function laneBuckets(source: Squad[]) {
+    const buckets: Record<number, Squad[]> = { 0: [], 1: [], 2: [] };
+    for (const sq of source) {
+      const lane = sq.column_index >= 0 && sq.column_index <= 2 ? sq.column_index : 0;
+      buckets[lane].push(sq);
+    }
+    for (const lane of SQUAD_LANES) {
+      buckets[lane].sort((a, b) => a.display_order - b.display_order || a.id - b.id);
+    }
+    return buckets;
+  }
+
+  async function persistLaneLayout(buckets: Record<number, Squad[]>) {
+    if (!permissions?.is_admin || !orbat || !operation) return;
+    const updates: Array<Promise<unknown>> = [];
+    for (const lane of SQUAD_LANES) {
+      buckets[lane].forEach((sq, index) => {
+        if (sq.column_index !== lane || sq.display_order !== index) {
+          updates.push(api.updateSquad(sq.id, { column_index: lane, display_order: index }));
+        }
+      });
+    }
+    if (updates.length === 0) return;
+    await Promise.all(updates);
+    await reloadOperation(operation.id);
   }
 
   useEffect(() => {
@@ -272,7 +302,7 @@ function App() {
   async function addSquad() {
     if (!operation || !newSquadName.trim() || !permissions?.is_admin) return;
     try {
-      await api.addSquad(operation.id, { name: newSquadName.trim() });
+      await api.addSquad(operation.id, { name: newSquadName.trim(), column_index: 1 });
       await reloadOperation(operation.id);
       setNewSquadName("");
     } catch (err) {
@@ -317,7 +347,10 @@ function App() {
 
   async function moveSquad(squad: Squad, direction: "up" | "down") {
     if (!operation || !permissions?.is_admin || !orbat) return;
-    const ordered = [...orbat.squads].sort((a, b) => a.display_order - b.display_order);
+    const lane = squad.column_index >= 0 && squad.column_index <= 2 ? squad.column_index : 0;
+    const ordered = [...orbat.squads]
+      .filter((s) => (s.column_index >= 0 && s.column_index <= 2 ? s.column_index : 0) === lane)
+      .sort((a, b) => a.display_order - b.display_order);
     const idx = ordered.findIndex((s) => s.id === squad.id);
     if (idx < 0) return;
     const swapIdx = direction === "up" ? idx - 1 : idx + 1;
@@ -332,10 +365,46 @@ function App() {
     }
   }
 
+  function onSquadDragStart(squadId: number) {
+    setDraggedSquadId(squadId);
+  }
+
+  function onSquadDragEnd() {
+    setDraggedSquadId(null);
+  }
+
+  async function dropSquadAt(lane: number, insertIndex: number) {
+    if (!operation || !permissions?.is_admin || !orbat || draggedSquadId == null) return;
+    const buckets = laneBuckets(orbat.squads);
+    let dragged: Squad | null = null;
+    for (const currentLane of SQUAD_LANES) {
+      const idx = buckets[currentLane].findIndex((sq) => sq.id === draggedSquadId);
+      if (idx >= 0) {
+        dragged = buckets[currentLane][idx];
+        buckets[currentLane].splice(idx, 1);
+        break;
+      }
+    }
+    if (!dragged) return;
+    const target = buckets[lane];
+    const safeIndex = Math.max(0, Math.min(insertIndex, target.length));
+    target.splice(safeIndex, 0, dragged);
+    try {
+      await persistLaneLayout(buckets);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setDraggedSquadId(null);
+    }
+  }
+
   async function copySquad(squad: Squad) {
     if (!operation || !permissions?.is_admin) return;
     try {
-      const created = await api.addSquad(operation.id, { name: `${squad.name} Copy` });
+      const created = await api.addSquad(operation.id, {
+        name: `${squad.name} Copy`,
+        column_index: squad.column_index,
+      });
       for (const slot of squad.slots) {
         await api.addSlot(operation.id, {
           squad_id: created.id,
@@ -444,6 +513,8 @@ function App() {
     }
   }
 
+  const squadsByLane = laneBuckets(orbat?.squads ?? []);
+
   if (!session) {
     return (
       <div className="page">
@@ -544,74 +615,124 @@ function App() {
         {operation ? (
           <>
             <p className="op-title">Operation: <strong>{operation.name}</strong></p>
-            {orbat?.squads.map((squad) => (
-              <div key={squad.id} className="squad">
-                <div className="squad-head">
-                  {editingSquadId === squad.id ? (
-                    <div className="row compact-row">
-                      <input
-                        value={editingSquadName}
-                        onChange={(e) => setEditingSquadName(e.target.value)}
-                        placeholder="Squad name"
-                      />
-                      <button onClick={saveEditSquad}>Save</button>
-                      <button className="ghost-btn" onClick={cancelEditSquad}>Cancel</button>
-                    </div>
-                  ) : (
-                    <h3>{squad.name}</h3>
-                  )}
+            <div className="lane-grid">
+              {SQUAD_LANES.map((lane) => (
+                <div key={lane} className="lane-column">
+                  <div className="lane-header">{laneLabel(lane)}</div>
                   {permissions?.is_admin && (
-                    <div className="squad-actions">
-                      <button className="ghost-btn" onClick={() => moveSquad(squad, "up")}>Up</button>
-                      <button className="ghost-btn" onClick={() => moveSquad(squad, "down")}>Down</button>
-                      <button className="ghost-btn" onClick={() => beginEditSquad(squad)}>Rename</button>
-                      <button className="ghost-btn" onClick={() => copySquad(squad)}>Copy Squad</button>
-                      <button className="danger-btn" onClick={() => deleteSquad(squad.id)}>Delete Squad</button>
+                    <div
+                      className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        void dropSquadAt(lane, 0);
+                      }}
+                    >
+                      Drop squad here
+                    </div>
+                  )}
+                  {squadsByLane[lane].map((squad, idx) => (
+                    <div key={squad.id}>
+                      {permissions?.is_admin && (
+                        <div
+                          className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            void dropSquadAt(lane, idx);
+                          }}
+                        >
+                          Insert here
+                        </div>
+                      )}
+                      <div
+                        className="squad"
+                        draggable={Boolean(permissions?.is_admin)}
+                        onDragStart={() => onSquadDragStart(squad.id)}
+                        onDragEnd={onSquadDragEnd}
+                      >
+                        <div className="squad-head">
+                          {editingSquadId === squad.id ? (
+                            <div className="row compact-row">
+                              <input
+                                value={editingSquadName}
+                                onChange={(e) => setEditingSquadName(e.target.value)}
+                                placeholder="Squad name"
+                              />
+                              <button onClick={saveEditSquad}>Save</button>
+                              <button className="ghost-btn" onClick={cancelEditSquad}>Cancel</button>
+                            </div>
+                          ) : (
+                            <h3>{squad.name}</h3>
+                          )}
+                          {permissions?.is_admin && (
+                            <div className="squad-actions">
+                              <button className="ghost-btn" onClick={() => moveSquad(squad, "up")}>Up</button>
+                              <button className="ghost-btn" onClick={() => moveSquad(squad, "down")}>Down</button>
+                              <button className="ghost-btn" onClick={() => beginEditSquad(squad)}>Rename</button>
+                              <button className="ghost-btn" onClick={() => copySquad(squad)}>Copy Squad</button>
+                              <button className="danger-btn" onClick={() => deleteSquad(squad.id)}>Delete Squad</button>
+                            </div>
+                          )}
+                        </div>
+                        <ul>
+                          {squad.slots.map((slot) => (
+                            <li key={slot.id}>
+                              <span>
+                                {editingSlotId === slot.id ? (
+                                  <span className="row compact-row">
+                                    <input
+                                      value={editingSlotName}
+                                      onChange={(e) => setEditingSlotName(e.target.value)}
+                                      placeholder="Role name"
+                                    />
+                                    <button onClick={saveEditSlot}>Save</button>
+                                    <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
+                                  </span>
+                                ) : (
+                                  <>
+                                    {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                                  </>
+                                )}
+                              </span>
+                              <div className="slot-actions">
+                                {!slot.assigned_to_member_name && (
+                                  <button onClick={() => requestSlot(slot.id)} disabled={!session}>
+                                    {session ? "Request" : "Login required"}
+                                  </button>
+                                )}
+                                {permissions?.is_admin && (
+                                  <>
+                                    <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
+                                    <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
+                                    <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
+                                    <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
+                                      Delete Role
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ))}
+                  {permissions?.is_admin && (
+                    <div
+                      className={`drop-slot ${draggedSquadId != null ? "active" : ""}`}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        void dropSquadAt(lane, squadsByLane[lane].length);
+                      }}
+                    >
+                      Drop to end
                     </div>
                   )}
                 </div>
-                <ul>
-                  {squad.slots.map((slot) => (
-                    <li key={slot.id}>
-                      <span>
-                        {editingSlotId === slot.id ? (
-                          <span className="row compact-row">
-                            <input
-                              value={editingSlotName}
-                              onChange={(e) => setEditingSlotName(e.target.value)}
-                              placeholder="Role name"
-                            />
-                            <button onClick={saveEditSlot}>Save</button>
-                            <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
-                          </span>
-                        ) : (
-                          <>
-                            {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
-                          </>
-                        )}
-                      </span>
-                      <div className="slot-actions">
-                        {!slot.assigned_to_member_name && (
-                          <button onClick={() => requestSlot(slot.id)} disabled={!session}>
-                            {session ? "Request" : "Login required"}
-                          </button>
-                        )}
-                        {permissions?.is_admin && (
-                          <>
-                            <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
-                            <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
-                            <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
-                            <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
-                              Delete Role
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+              ))}
+            </div>
           </>
         ) : (
           <p className="access-note">No active operation in this server yet.</p>
