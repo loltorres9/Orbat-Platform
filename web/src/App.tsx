@@ -28,11 +28,8 @@ function App() {
   })();
   const appHashUrl = `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
   const buildAppHashUrl = () => {
-    // In embedded mode, always return to the app origin itself.
-    // Wrapper pages (e.g. Google Sites/custom domains) keep the token outside the app context.
-    if (isEmbedded) {
-      return appHashUrl;
-    }
+    // Prefer explicit configured return target (e.g. custom domain wrapper).
+    // The OAuth/session race is handled separately by sessionChecked + delayed token scrub.
     if (configuredReturnTo) {
       return normalizeReturnTo(configuredReturnTo);
     }
