@@ -151,6 +151,19 @@ function App() {
     return buckets;
   }
 
+  function teamBuckets(slots: Slot[]) {
+    const buckets: Record<string, Slot[]> = {};
+    for (const team of TEAM_OPTIONS) buckets[team] = [];
+    for (const slot of slots) {
+      const team = slot.team && TEAM_OPTIONS.includes(slot.team) ? slot.team : "Alpha";
+      buckets[team].push(slot);
+    }
+    for (const team of TEAM_OPTIONS) {
+      buckets[team].sort((a, b) => a.display_order - b.display_order || a.id - b.id);
+    }
+    return TEAM_OPTIONS.map((team) => ({ team, slots: buckets[team] })).filter((entry) => entry.slots.length > 0);
+  }
+
   async function persistLaneLayout(buckets: Record<number, Squad[]>) {
     if (!permissions?.is_admin || !orbat || !operation) return;
     const updates: Array<Promise<unknown>> = [];
@@ -732,54 +745,59 @@ function App() {
                             </div>
                           )}
                         </div>
-                        <ul>
-                          {squad.slots.map((slot) => (
-                            <li key={slot.id}>
-                              <span>
-                                {editingSlotId === slot.id ? (
-                                  <span className="row compact-row">
-                                    <input
-                                      value={editingSlotName}
-                                      onChange={(e) => setEditingSlotName(e.target.value)}
-                                      placeholder="Role name"
-                                    />
-                                    <select
-                                      value={editingSlotTeam}
-                                      onChange={(e) => setEditingSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}
-                                    >
-                                      {TEAM_OPTIONS.map((team) => (
-                                        <option key={team} value={team}>{team}</option>
-                                      ))}
-                                    </select>
-                                    <button onClick={saveEditSlot}>Save</button>
-                                    <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
+                        {teamBuckets(squad.slots).map((teamGroup) => (
+                          <div key={teamGroup.team} className="team-group">
+                            <div className="team-group-title">{teamGroup.team}</div>
+                            <ul>
+                              {teamGroup.slots.map((slot) => (
+                                <li key={slot.id}>
+                                  <span>
+                                    {editingSlotId === slot.id ? (
+                                      <span className="row compact-row">
+                                        <input
+                                          value={editingSlotName}
+                                          onChange={(e) => setEditingSlotName(e.target.value)}
+                                          placeholder="Role name"
+                                        />
+                                        <select
+                                          value={editingSlotTeam}
+                                          onChange={(e) => setEditingSlotTeam(e.target.value as (typeof TEAM_OPTIONS)[number])}
+                                        >
+                                          {TEAM_OPTIONS.map((team) => (
+                                            <option key={team} value={team}>{team}</option>
+                                          ))}
+                                        </select>
+                                        <button onClick={saveEditSlot}>Save</button>
+                                        <button className="ghost-btn" onClick={cancelEditSlot}>Cancel</button>
+                                      </span>
+                                    ) : (
+                                      <>
+                                        {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
+                                      </>
+                                    )}
                                   </span>
-                                ) : (
-                                  <>
-                                    <span className="team-chip">{slot.team || "Alpha"}</span> {slot.role_name} {slot.assigned_to_member_name ? `- ${slot.assigned_to_member_name}` : "(open)"}
-                                  </>
-                                )}
-                              </span>
-                              <div className="slot-actions">
-                                {!slot.assigned_to_member_name && (
-                                  <button onClick={() => requestSlot(slot.id)} disabled={!session}>
-                                    {session ? "Request" : "Login required"}
-                                  </button>
-                                )}
-                                {permissions?.is_admin && (
-                                  <>
-                                    <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
-                                    <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
-                                    <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
-                                    <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
-                                      Delete Role
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                                  <div className="slot-actions">
+                                    {!slot.assigned_to_member_name && (
+                                      <button onClick={() => requestSlot(slot.id)} disabled={!session}>
+                                        {session ? "Request" : "Login required"}
+                                      </button>
+                                    )}
+                                    {permissions?.is_admin && (
+                                      <>
+                                        <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "up")}>Up</button>
+                                        <button className="ghost-btn" onClick={() => moveSlot(squad, slot, "down")}>Down</button>
+                                        <button className="ghost-btn" onClick={() => beginEditSlot(slot)}>Rename</button>
+                                        <button className="danger-btn" onClick={() => deleteSlot(slot.id)}>
+                                          Delete Role
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   ))}

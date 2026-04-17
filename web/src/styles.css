@@ -272,6 +272,23 @@ button:disabled {
   margin-right: 6px;
 }
 
+.team-group {
+  margin-top: 10px;
+}
+
+.team-group-title {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #b8c5d3;
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  border: 1px solid #425367;
+  border-radius: 999px;
+  display: inline-block;
+  background: rgba(125, 141, 160, 0.16);
+}
+
 .squad ul {
   list-style: none;
   padding: 0;
