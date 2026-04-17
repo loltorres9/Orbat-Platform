@@ -2,24 +2,38 @@ name: Deploy Frontend to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - claude/general-session-Lb8Lr
     paths: ['frontend/**']
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
-  build:
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve deploy target
+        run: |
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          if [[ "${BRANCH_NAME}" == "main" ]]; then
+            echo "DEPLOY_SUBDIR=." >> "$GITHUB_ENV"
+            echo "PUBLIC_BASE_PATH=/Orbat-Platform/" >> "$GITHUB_ENV"
+            echo "VITE_API_URL=${{ vars.VITE_API_URL }}" >> "$GITHUB_ENV"
+          elif [[ "${BRANCH_NAME}" == "claude/general-session-Lb8Lr" ]]; then
+            echo "DEPLOY_SUBDIR=claude-general-session" >> "$GITHUB_ENV"
+            echo "PUBLIC_BASE_PATH=/Orbat-Platform/claude-general-session/" >> "$GITHUB_ENV"
+            echo "VITE_API_URL=${{ secrets.VITE_API_URL_DEV }}" >> "$GITHUB_ENV"
+          else
+            echo "Unknown branch ${BRANCH_NAME}, skipping deploy"
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -32,19 +46,14 @@ jobs:
       - name: Build
         working-directory: frontend
         env:
-          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+          VITE_BASE_PATH: ${{ env.PUBLIC_BASE_PATH }}
         run: npm run build
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: frontend/dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/dist
+          destination_dir: ${{ env.DEPLOY_SUBDIR }}
+          keep_files: true
