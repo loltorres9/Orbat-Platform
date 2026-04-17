@@ -15,9 +15,23 @@ function App() {
     if (target.includes("#/")) return target;
     return `${target.replace(/\/+$/, "")}#/app`;
   };
+  const embeddedReferrerReturnTo = (() => {
+    if (typeof document === "undefined") return "";
+    if (!document.referrer) return "";
+    try {
+      const ref = new URL(document.referrer);
+      if (!/^https?:$/.test(ref.protocol)) return "";
+      return normalizeReturnTo(ref.origin + ref.pathname);
+    } catch {
+      return "";
+    }
+  })();
   const buildAppHashUrl = () => {
     if (configuredReturnTo) {
       return normalizeReturnTo(configuredReturnTo);
+    }
+    if (isEmbedded && embeddedReferrerReturnTo) {
+      return embeddedReferrerReturnTo;
     }
     return `${window.location.origin}${basePath.endsWith("/") ? basePath : `${basePath}/`}#/app`;
   };
