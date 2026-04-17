@@ -162,7 +162,10 @@ async def _post_approval_message(bot: commands.Bot, interaction: discord.Interac
 
     view = ApprovalView(request_id=request_id, bot=bot)
     msg = await approval_channel.send(embed=embed, view=view)
-    bot.add_view(view)
+    try:
+        bot.add_view(view)
+    except ValueError:
+        pass
     await database.update_request_message(request_id, str(msg.id), str(approval_channel.id))
 
 

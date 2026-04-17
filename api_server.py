@@ -280,7 +280,13 @@ async def _post_approval_request(app: FastAPI, request_id: int, operation, slot,
 
     view = ApprovalView(request_id=request_id, bot=bot)
     message = await approval_channel.send(embed=embed, view=view)
-    bot.add_view(view)
+    try:
+        # add_view requires a persistent view (custom_id on all items). The
+        # message already has the live view attached; don't fail the request flow
+        # if persistent registration is not possible.
+        bot.add_view(view)
+    except ValueError:
+        pass
     await database.update_request_message(request_id, str(message.id), str(approval_channel.id))
 
 
