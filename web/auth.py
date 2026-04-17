@@ -1,3 +1,4 @@
+import json
 import os
 import httpx
 from fastapi import APIRouter, Request, HTTPException
@@ -89,7 +90,7 @@ async def me(request: Request):
         'id': session['discord_user_id'],
         'username': session['discord_username'],
         'avatar': session['discord_avatar'],
-        'guilds': session['guilds'] or [],
+        'guilds': (json.loads(session['guilds']) if isinstance(session['guilds'], str) else session['guilds']) or [],
     }
 
 
