@@ -861,7 +861,7 @@ function App() {
     return (
       <div className="page">
         <section className="panel login-panel">
-          <h1>ORBAT Platform</h1>
+          <h1>TASK FORCE PHALANX Orbat Platform</h1>
           <p className="access-note">Connecting...</p>
         </section>
       </div>
@@ -872,7 +872,7 @@ function App() {
     return (
       <div className="page">
         <section className="panel login-panel">
-          <h1>ORBAT Platform</h1>
+          <h1>TASK FORCE PHALANX Orbat Platform</h1>
           <div className="login-stack">
             <p className="access-note">Please sign in with Discord first.</p>
             {isEmbedded ? (
@@ -909,8 +909,7 @@ function App() {
     <div className="page">
       <header className="hero">
         <div className="title-wrap">
-          <h1>ORBAT Platform</h1>
-          <p className="subtitle">{status}</p>
+          <h1>TASK FORCE PHALANX Orbat Platform</h1>
         </div>
         <div className="row">
           {permissions?.is_admin ? (
