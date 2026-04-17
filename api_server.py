@@ -247,7 +247,9 @@ async def _create_session_from_discord(
     token_data, user_data = await _discord_oauth_exchange(code)
     session_token = secrets.token_urlsafe(48)
     expires_in = int(token_data.get("expires_in", 604800))
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    # web_sessions.expires_at is TIMESTAMP WITHOUT TIME ZONE in Postgres.
+    # Store naive UTC to avoid asyncpg aware/naive datetime encoding errors.
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expires_in)).replace(tzinfo=None)
 
     await database.create_web_session(
         session_token=session_token,
